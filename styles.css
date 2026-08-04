@@ -1,0 +1,602 @@
+/* Note Maintainer — native review UI.
+   Shared by both containers (sidebar ReviewView and ReviewModal). */
+
+/* --- status / error --- */
+
+.nm-status {
+    color: var(--text-muted);
+    padding: 1rem;
+}
+
+.nm-error {
+    color: var(--text-error);
+    padding: 1rem;
+}
+
+.nm-error p {
+    margin: 0 0 0.5em;
+}
+
+.nm-resolved {
+    color: var(--text-success, var(--text-normal));
+    padding: 1rem;
+}
+
+.nm-resolved p {
+    margin: 0;
+}
+
+/* --- clean review: validation banner + diff table injected from server --- */
+
+.nm-banner-wrap {
+    margin-bottom: 1rem;
+}
+
+.nm-banner-wrap .banner {
+    padding: 12px 16px;
+    border-radius: var(--radius-m);
+    margin-bottom: 16px;
+    font-size: var(--font-ui-small);
+}
+
+.nm-banner-wrap .banner-pass {
+    background: var(--background-modifier-success);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.nm-banner-wrap .banner-fail {
+    background: var(--background-modifier-error);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.nm-banner-wrap .banner-fail ul {
+    margin: 8px 0 0 16px;
+}
+
+.nm-banner-wrap .banner-fail li {
+    margin-bottom: 4px;
+}
+
+.nm-banner-wrap table.diff {
+    /* difflib emits nowrap="nowrap" cells with &nbsp; spaces, so lines have
+       no wrap points by default. Wrapping is re-enabled on the cells, and
+       the table is 100% of whatever container hosts it (modal or sidebar).
+       Auto layout lets the line-number columns shrink to their text. */
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller);
+}
+
+.nm-banner-wrap table.diff td {
+    padding: 2px 8px;
+    vertical-align: top;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* 4-column layout: linenum | original | linenum | cleaned. The diff_next
+   navigation cells are stripped from the injected HTML by the plugin
+   renderer; these rules keep the linenum columns as narrow as their text. */
+.nm-banner-wrap table.diff thead th.diff_header {
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    text-align: left;
+    padding: 4px 8px;
+}
+
+.nm-banner-wrap table.diff tbody td.diff_header {
+    width: 1%;
+    white-space: nowrap;
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    text-align: right;
+}
+
+.nm-banner-wrap table.diff .diff_next {
+    display: none;
+}
+
+.nm-banner-wrap table.diff .diff_add {
+    background: var(--background-modifier-success);
+}
+
+.nm-banner-wrap table.diff .diff_chg {
+    background: var(--background-modifier-hover);
+}
+
+.nm-banner-wrap table.diff .diff_sub {
+    background: var(--background-modifier-error);
+}
+
+/* --- actions --- */
+
+.nm-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 16px 0;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.nm-actions button {
+    flex: 1;
+    padding: 12px 24px;
+    font-weight: 600;
+    border: none;
+    border-radius: var(--radius-m);
+    cursor: pointer;
+}
+
+.nm-btn {
+    padding: 6px 14px;
+    border-radius: var(--radius-m);
+    border: none;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.nm-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.nm-btn-accept {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.nm-btn-reject {
+    background: var(--background-modifier-error);
+    color: var(--text-on-accent);
+}
+
+.nm-btn-primary {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+/* --- sort review: stats, decision cards, boxes --- */
+
+.nm-subtitle {
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+    margin-bottom: 1rem;
+}
+
+.nm-stats {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.nm-stat {
+    padding: 6px 12px;
+    border-radius: var(--radius-m);
+    font-size: var(--font-ui-small);
+    font-weight: 600;
+}
+
+.nm-stat-placed {
+    background: var(--background-modifier-success);
+}
+
+.nm-stat-flagged {
+    background: var(--background-modifier-warning, #fff3cd);
+}
+
+.nm-stat-near-dup {
+    background: var(--background-modifier-error);
+}
+
+.nm-stat-total {
+    background: var(--background-secondary);
+}
+
+.nm-card {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+
+.nm-card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    font-size: var(--font-ui-small);
+    font-weight: 600;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.nm-card-path {
+    word-break: break-all;
+}
+
+.nm-card-score {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+.nm-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: var(--radius-s);
+    font-size: 0.75rem;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.nm-badge-placed {
+    background: var(--background-modifier-success);
+}
+
+.nm-badge-flagged {
+    background: var(--background-modifier-warning, #fff3cd);
+}
+
+.nm-badge-near-dup {
+    background: var(--background-modifier-error);
+}
+
+.nm-badge-no-dest {
+    background: var(--background-secondary);
+}
+
+.nm-card-body {
+    padding: 12px;
+}
+
+.nm-panels {
+    display: flex;
+    gap: 12px;
+}
+
+.nm-panel {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    overflow: hidden;
+}
+
+.nm-panel-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.nm-panel-label-source {
+    background: var(--background-secondary);
+    color: var(--text-muted);
+}
+
+.nm-panel-label-dest {
+    background: var(--background-secondary);
+    color: var(--text-accent);
+}
+
+.nm-panel-content {
+    padding: 8px 10px;
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller);
+    line-height: 1.5;
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.nm-strikethrough {
+    color: var(--text-faint);
+    text-decoration: line-through;
+}
+
+.nm-highlight {
+    background: var(--background-modifier-success);
+}
+
+.nm-flagged-content {
+    color: var(--text-muted);
+}
+
+.nm-card-footer {
+    padding: 8px 12px;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.nm-box {
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    padding: 12px 16px;
+    margin-top: 16px;
+    font-size: var(--font-ui-small);
+    line-height: 1.6;
+}
+
+.nm-box h3 {
+    font-size: var(--font-ui-small);
+    margin-bottom: 8px;
+    color: var(--text-accent);
+}
+
+.nm-box pre {
+    font-family: var(--font-monospace);
+    white-space: pre-wrap;
+    margin: 0;
+    color: var(--text-normal);
+}
+
+/* --- chat --- */
+
+.nm-chat {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 300px;
+}
+
+.nm-chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.nm-msg {
+    padding: 8px 12px;
+    border-radius: var(--radius-m);
+    max-width: 90%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.nm-msg p {
+    margin: 0 0 6px;
+}
+
+.nm-msg p:last-child {
+    margin-bottom: 0;
+}
+
+.nm-msg-user {
+    align-self: flex-end;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.nm-msg-assistant {
+    align-self: flex-start;
+    background: var(--background-secondary);
+}
+
+/* Rendered markdown inside assistant bubbles */
+.nm-markdown p {
+    margin: 0 0 6px;
+}
+
+.nm-markdown p:last-child {
+    margin-bottom: 0;
+}
+
+.nm-markdown h1,
+.nm-markdown h2,
+.nm-markdown h3,
+.nm-markdown h4 {
+    margin: 8px 0 4px;
+    color: var(--text-normal);
+}
+
+.nm-markdown ul,
+.nm-markdown ol {
+    margin: 4px 0 6px;
+    padding-left: 18px;
+}
+
+.nm-markdown li {
+    margin-bottom: 2px;
+}
+
+.nm-markdown blockquote {
+    margin: 6px 0;
+    padding-left: 10px;
+    border-left: 3px solid var(--background-modifier-border);
+    color: var(--text-muted);
+}
+
+.nm-markdown code {
+    background: var(--background-modifier-border);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-size: 0.9em;
+}
+
+.nm-markdown pre {
+    background: var(--background-primary-alt);
+    border-radius: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+}
+
+.nm-citation {
+    color: var(--text-accent);
+    font-weight: 600;
+    font-size: 0.82em;
+}
+
+.nm-msg-loading {
+    color: var(--text-muted);
+}
+
+.nm-chat-input-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.nm-chat-input {
+    flex: 1;
+}
+
+.nm-sources {
+    margin-top: 8px;
+    font-size: var(--font-ui-smaller);
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.nm-sources-title {
+    font-weight: 600;
+    color: var(--text-muted);
+    margin: 6px 0 4px;
+}
+
+.nm-source {
+    padding: 4px 0;
+}
+
+.nm-source-meta {
+    color: var(--text-muted);
+}
+
+.nm-source-file {
+    font-weight: 600;
+    color: var(--text-normal);
+}
+
+.nm-source-text {
+    margin-top: 2px;
+    white-space: pre-wrap;
+}
+
+/* --- modal sizing (sidebar view needs no override) ---
+   Width/height set directly so it wins regardless of theme defaults;
+   85vw/85vh ≈ 85% coverage of the Obsidian window. */
+
+.modal.nm-review-modal {
+    --modal-width: 85vw;
+    --modal-height: 85vh;
+    width: 85vw;
+    max-width: 85vw;
+    height: 85vh;
+    max-height: 85vh;
+    /* Obsidian's base CSS blocks drag text selection in modals
+       (user-select: none). Re-enable it for the review content and its
+       children so answers and sources can be selected and copied. */
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.modal.nm-review-modal * {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* Sidebar pane (ReviewView): Obsidian's base CSS blocks drag selection in
+   leaf content too. Opt the review pane back in, like the modal above. */
+.nm-review,
+.nm-review * {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* --- in-pane tabs (sidebar review view) --- */
+
+.nm-review {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.nm-tab-bar {
+    display: flex;
+    gap: 4px;
+    padding: 6px 8px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    flex-shrink: 0;
+}
+
+.nm-tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    font-size: var(--font-ui-small);
+    color: var(--text-muted);
+    user-select: none;
+}
+
+.nm-tab:hover {
+    background: var(--background-modifier-hover);
+}
+
+.nm-tab.nm-tab-active {
+    color: var(--text-normal);
+    background: var(--background-secondary);
+}
+
+.nm-tab-close {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    border-radius: 3px;
+}
+
+.nm-tab-close:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+}
+
+.nm-tab-panels {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.nm-tab-panel {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.nm-tab-panel.nm-tab-active {
+    display: block;
+}
+
+/* Chat manages its own internal scroll (messages + input), so its panel
+   must not scroll as a whole. */
+.nm-tab-panel.nm-tab-active.nm-chat {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.nm-tab-empty {
+    padding: 24px 16px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+    text-align: center;
+}

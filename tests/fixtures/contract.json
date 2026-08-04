@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "note": "Single source of truth for the Obsidian plugin <-> server HTTP contract. Mutating endpoints require the CSRF token (X-Note-Maintainer-Token) when called from a browser origin. Same-origin requests (pages served by the server, e.g. /chat) are trusted without a token. /health is always open and carries the token.",
+  "endpoints": [
+    {
+      "endpoint": "/health",
+      "method": "GET",
+      "auth": "none",
+      "body": [],
+      "response_fields": ["status", "token"]
+    },
+    {
+      "endpoint": "/clean",
+      "method": "POST",
+      "auth": "token",
+      "body": ["file_path", "vault_path"],
+      "response_fields": ["status", "result", "preview_url"]
+    },
+    {
+      "endpoint": "/clean-all",
+      "method": "POST",
+      "auth": "token",
+      "body": ["vault_path"],
+      "response_fields": ["status", "result", "preview_url"]
+    },
+    {
+      "endpoint": "/sort",
+      "method": "POST",
+      "auth": "token",
+      "body": ["vault_path", "inbox_folder"],
+      "response_fields": ["placed", "flagged", "review_url", "sort_id", "total"]
+    },
+    {
+      "endpoint": "/build",
+      "method": "POST",
+      "auth": "token",
+      "body": ["vault_path"],
+      "response_fields": ["result"]
+    },
+    {
+      "endpoint": "/chat/query",
+      "method": "POST",
+      "auth": "token",
+      "body": ["question"],
+      "response_fields": ["answer", "results"]
+    },
+    {
+      "endpoint": "/preview/<id>/accept",
+      "method": "POST",
+      "auth": "token",
+      "body": [],
+      "response_fields": []
+    },
+    {
+      "endpoint": "/preview/<id>/reject",
+      "method": "POST",
+      "auth": "token",
+      "body": [],
+      "response_fields": []
+    },
+    {
+      "endpoint": "/sort-review/<id>",
+      "method": "GET",
+      "auth": "token",
+      "body": [],
+      "response_fields": []
+    },
+    {
+      "endpoint": "/sort-review/<id>/content",
+      "method": "GET",
+      "auth": "token",
+      "body": [],
+      "response_fields": ["decisions", "manifest_constitution", "suggestions", "elapsed"]
+    },
+    {
+      "endpoint": "/preview/<id>/content",
+      "method": "GET",
+      "auth": "token",
+      "body": [],
+      "response_fields": ["pending_id", "file_path", "meta", "diff_html", "original", "cleaned"]
+    }
+  ]
+}

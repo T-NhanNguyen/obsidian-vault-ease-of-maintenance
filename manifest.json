@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-vault-ease-of-maintenance",
+  "name": "Vault Ease of Maintenance",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "AI-powered vault maintenance: GraphRAG indexer, cleanup agent, inbox triage, and RAG chat. Runs entirely inside Obsidian.",
+  "author": "Note Maintainer",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

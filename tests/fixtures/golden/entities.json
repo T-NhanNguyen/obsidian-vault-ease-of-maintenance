@@ -1,0 +1,102 @@
+{
+  "10_Stocks/Bloom_Energy/bloom-energy-financials.md": {
+    "phrase": [
+      "Backlog",
+      "Bloom Energy",
+      "Debt",
+      "Gross",
+      "Guidance",
+      "Operating"
+    ],
+    "tag": [
+      "#stocks"
+    ],
+    "wikilink": []
+  },
+  "10_Stocks/Bloom_Energy/bloom-energy-overview.md": {
+    "phrase": [
+      "Bloom",
+      "Bloom Energy",
+      "Customers",
+      "Data",
+      "Efficiency",
+      "The Bloom Energy Server"
+    ],
+    "tag": [
+      "#fuel-cells",
+      "#stocks"
+    ],
+    "wikilink": [
+      "datacenter-power-demand",
+      "iren-ai-transition"
+    ]
+  },
+  "10_Stocks/IREN/iren-ai-transition.md": {
+    "phrase": [
+      "Fuel",
+      "Grid",
+      "Mining",
+      "These"
+    ],
+    "tag": [],
+    "wikilink": [
+      "bloom-energy-overview"
+    ]
+  },
+  "10_Stocks/IREN/iren-overview.md": {
+    "phrase": [
+      "Australia",
+      "Limited",
+      "Power",
+      "Revenue",
+      "United States"
+    ],
+    "tag": [
+      "#bitcoin"
+    ],
+    "wikilink": [
+      "bloom-energy-overview",
+      "datacenter-power-demand"
+    ]
+  },
+  "20_AI_Speculations/datacenter-power-demand.md": {
+    "phrase": [
+      "Data",
+      "Demand",
+      "Developers",
+      "Each",
+      "Fuel",
+      "Grid",
+      "Utilities"
+    ],
+    "tag": [],
+    "wikilink": [
+      "bloom-energy-overview",
+      "iren-ai-transition"
+    ]
+  },
+  "20_AI_Speculations/inference-cost-curve.md": {
+    "phrase": [
+      "Cheaper",
+      "Inference",
+      "Speculative"
+    ],
+    "tag": [
+      "#ai",
+      "#inference"
+    ],
+    "wikilink": []
+  },
+  "20_AI_Speculations/sovereign-ai.md": {
+    "phrase": [
+      "Asia",
+      "Data",
+      "Europe",
+      "Governments",
+      "Texas",
+      "Virginia"
+    ],
+    "tag": [],
+    "wikilink": []
+  }
+}

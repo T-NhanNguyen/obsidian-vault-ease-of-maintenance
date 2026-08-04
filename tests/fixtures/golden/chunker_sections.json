@@ -1,0 +1,176 @@
+{
+  "10_Stocks/Bloom_Energy/bloom-energy-financials.md": [
+    {
+      "content_hash": "132900281d00f39d66bd0cdb2741300bfbde7205",
+      "heading_path": "Financial Snapshot",
+      "heading_text": "Financial Snapshot",
+      "line_end": 4,
+      "line_start": 2,
+      "node_key": "10_Stocks/Bloom_Energy/bloom-energy-financials.md::Financial Snapshot"
+    },
+    {
+      "content_hash": "ac48f242a5d12cec0b75e21dc3e60421d2796ce4",
+      "heading_path": "Financial Snapshot \u203a Revenue and Guidance",
+      "heading_text": "Revenue and Guidance",
+      "line_end": 10,
+      "line_start": 6,
+      "node_key": "10_Stocks/Bloom_Energy/bloom-energy-financials.md::Financial Snapshot \u203a Revenue and Guidance"
+    },
+    {
+      "content_hash": "3346f138108e5debd56d7a91e7ecd72a8c3ffab8",
+      "heading_path": "Financial Snapshot \u203a Margins",
+      "heading_text": "Margins",
+      "line_end": 16,
+      "line_start": 12,
+      "node_key": "10_Stocks/Bloom_Energy/bloom-energy-financials.md::Financial Snapshot \u203a Margins"
+    }
+  ],
+  "10_Stocks/Bloom_Energy/bloom-energy-overview.md": [
+    {
+      "content_hash": "758887b9a15a173e33bf2c6a8a1f0df4a5ff321d",
+      "heading_path": "Company Overview",
+      "heading_text": "Company Overview",
+      "line_end": 6,
+      "line_start": 2,
+      "node_key": "10_Stocks/Bloom_Energy/bloom-energy-overview.md::Company Overview"
+    },
+    {
+      "content_hash": "a5686d7913431985f3d6879017b120d2219149a8",
+      "heading_path": "Product Lines",
+      "heading_text": "Product Lines",
+      "line_end": 10,
+      "line_start": 8,
+      "node_key": "10_Stocks/Bloom_Energy/bloom-energy-overview.md::Product Lines"
+    },
+    {
+      "content_hash": "4906e9364c94c9cd33138457a1b54dd4fae8c569",
+      "heading_path": "Product Lines \u203a Fuel Cell Stack",
+      "heading_text": "Fuel Cell Stack",
+      "line_end": 14,
+      "line_start": 12,
+      "node_key": "10_Stocks/Bloom_Energy/bloom-energy-overview.md::Product Lines \u203a Fuel Cell Stack"
+    },
+    {
+      "content_hash": "787a7f7f5949d8458b5da53fd4c75d68a54e75a0",
+      "heading_path": "Market Position",
+      "heading_text": "Market Position",
+      "line_end": 18,
+      "line_start": 16,
+      "node_key": "10_Stocks/Bloom_Energy/bloom-energy-overview.md::Market Position"
+    }
+  ],
+  "10_Stocks/IREN/iren-ai-transition.md": [
+    {
+      "content_hash": "4b607f1234db6334cd6cff8e356dc2a0520f1ed9",
+      "heading_path": "The AI Transition",
+      "heading_text": "The AI Transition",
+      "line_end": 4,
+      "line_start": 2,
+      "node_key": "10_Stocks/IREN/iren-ai-transition.md::The AI Transition"
+    },
+    {
+      "content_hash": "7123779a5a3895dc9b20ab6fa469f9df8b66bcf9",
+      "heading_path": "The AI Transition \u203a From Mining to Compute",
+      "heading_text": "From Mining to Compute",
+      "line_end": 8,
+      "line_start": 6,
+      "node_key": "10_Stocks/IREN/iren-ai-transition.md::The AI Transition \u203a From Mining to Compute"
+    },
+    {
+      "content_hash": "8f7d3bd0dd983edbc622db28c64885b40c582ccf",
+      "heading_path": "The AI Transition \u203a Power Procurement",
+      "heading_text": "Power Procurement",
+      "line_end": 12,
+      "line_start": 10,
+      "node_key": "10_Stocks/IREN/iren-ai-transition.md::The AI Transition \u203a Power Procurement"
+    }
+  ],
+  "10_Stocks/IREN/iren-overview.md": [
+    {
+      "content_hash": "b5d1b9fac9bfd6a0998a7edfbb0c748034e5f750",
+      "heading_path": "Overview",
+      "heading_text": "Overview",
+      "line_end": 4,
+      "line_start": 2,
+      "node_key": "10_Stocks/IREN/iren-overview.md::Overview"
+    },
+    {
+      "content_hash": "6218e4a054e3a508b663cd92b9a103c75ad22402",
+      "heading_path": "Overview \u203a Bitcoin Mining Segment",
+      "heading_text": "Bitcoin Mining Segment",
+      "line_end": 8,
+      "line_start": 6,
+      "node_key": "10_Stocks/IREN/iren-overview.md::Overview \u203a Bitcoin Mining Segment"
+    },
+    {
+      "content_hash": "4cdbab371db8bc237037687b428cf461ce7030cc",
+      "heading_path": "Overview \u203a AI Data Center Segment",
+      "heading_text": "AI Data Center Segment",
+      "line_end": 12,
+      "line_start": 10,
+      "node_key": "10_Stocks/IREN/iren-overview.md::Overview \u203a AI Data Center Segment"
+    }
+  ],
+  "20_AI_Speculations/datacenter-power-demand.md": [
+    {
+      "content_hash": "b574de2b75e408c15828fdc1f61a46d92a94303c",
+      "heading_path": "Datacenter Power Demand",
+      "heading_text": "Datacenter Power Demand",
+      "line_end": 4,
+      "line_start": 2,
+      "node_key": "20_AI_Speculations/datacenter-power-demand.md::Datacenter Power Demand"
+    },
+    {
+      "content_hash": "6417a3b334b26d7d58a4a93cfe0c72e30facaada",
+      "heading_path": "Datacenter Power Demand \u203a The Load Problem",
+      "heading_text": "The Load Problem",
+      "line_end": 8,
+      "line_start": 6,
+      "node_key": "20_AI_Speculations/datacenter-power-demand.md::Datacenter Power Demand \u203a The Load Problem"
+    },
+    {
+      "content_hash": "ac01f91189c37caa93ca31eb1227dd88df689292",
+      "heading_path": "Datacenter Power Demand \u203a Winners and Losers",
+      "heading_text": "Winners and Losers",
+      "line_end": 12,
+      "line_start": 10,
+      "node_key": "20_AI_Speculations/datacenter-power-demand.md::Datacenter Power Demand \u203a Winners and Losers"
+    }
+  ],
+  "20_AI_Speculations/inference-cost-curve.md": [
+    {
+      "content_hash": "253890245c40980625663b890c696fa94f8f469b",
+      "heading_path": "",
+      "heading_text": "",
+      "line_end": 2,
+      "line_start": 0,
+      "node_key": "20_AI_Speculations/inference-cost-curve.md::"
+    }
+  ],
+  "20_AI_Speculations/sovereign-ai.md": [
+    {
+      "content_hash": "6d9192e9ebfa713e840d30cb8c3d747f1db1d854",
+      "heading_path": "National AI Strategies",
+      "heading_text": "National AI Strategies",
+      "line_end": 4,
+      "line_start": 2,
+      "node_key": "20_AI_Speculations/sovereign-ai.md::National AI Strategies"
+    },
+    {
+      "content_hash": "1b226f53af0d166e3c07733a174c188834e699c3",
+      "heading_path": "National AI Strategies \u203a The United States",
+      "heading_text": "The United States",
+      "line_end": 8,
+      "line_start": 6,
+      "node_key": "20_AI_Speculations/sovereign-ai.md::National AI Strategies \u203a The United States"
+    },
+    {
+      "content_hash": "254582f3d4be85605faa915a66c30af7f8d09cca",
+      "heading_path": "National AI Strategies \u203a Europe and Asia",
+      "heading_text": "Europe and Asia",
+      "line_end": 12,
+      "line_start": 10,
+      "node_key": "20_AI_Speculations/sovereign-ai.md::National AI Strategies \u203a Europe and Asia"
+    }
+  ]
+}

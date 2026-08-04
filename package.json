@@ -1,0 +1,24 @@
+{
+  "name": "obsidian-vault-ease-of-maintenance",
+  "version": "1.0.0",
+  "description": "AI-powered vault maintenance: GraphRAG indexer + LLM-driven cleanup, triage, and chat agents. Runs entirely inside Obsidian — no server, no Python, no Docker.",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^20.0.0",
+    "better-sqlite3": "^11.0.0",
+    "esbuild": "^0.24.0",
+    "obsidian": "^1.5.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "@dqbd/tiktoken": "^1.0.0"
+  }
+}

@@ -1,0 +1,32 @@
+# Vault Ease of Maintenance — Example Configuration
+# Copy this file to config.yaml. Edit the values for your environment.
+# Do not commit config.yaml. It can contain your real API key.
+#
+# Key resolution order: plugin settings, api.api_key, environment variable.
+# Environment variables: OMLX_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY.
+
+vault_path: /path/to/your/vault   # informational. The plugin uses the vault you open.
+db_path: ""                       # informational. Derived as {vault}/.note-maintainer/index.db.
+inbox_folder: ""                  # folder to sort. Empty = auto-discover.
+ignore_patterns: ""               # one glob per line. Skips matching files and folders.
+
+api:
+  base_url: http://127.0.0.1:8000/v1   # local endpoint. Or https://openrouter.ai/api/v1
+  api_key: ""                          # optional. Falls back to an environment variable.
+
+manifest:
+  filename: _manifest.md               # manifest file name.
+
+embedding:
+  model: Qwen3-Embedding-0.6B-4bit-DWQ # model for embeddings.
+  dimensions: 1024                     # dimension count.
+
+agent:
+  model: gemma-3-4b-it-qat-4bit        # model for clean, sort, and chat.
+
+preview:
+  enabled: true                        # false = write immediately.
+  ttl_minutes: 30                      # pending reviews older than this are swept.
+
+query:
+  top_k: 5                             # default result count.

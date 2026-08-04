@@ -1,0 +1,27 @@
+# Node
+node_modules/
+*.log
+npm-debug.log*
+
+# Environment — never commit real API keys
+.env
+.env.local
+.env.*.local
+
+# Local user configuration — contains vault paths and optional API keys.
+# A fresh clone falls back to config.example.yaml automatically.
+config.yaml
+
+# Index data — GraphRAG DBs and pending review state
+data/
+.note-maintainer/
+
+# Build artifacts
+# (main.js is NOT ignored: the Obsidian community store requires the
+# compiled plugin at the repo root)
+
+# OS
+.DS_Store
+
+# Tooling / agent state
+.pi/

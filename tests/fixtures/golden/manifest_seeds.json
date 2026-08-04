@@ -1,0 +1,28 @@
+{
+  "seeds": [
+    {
+      "community_id": "79bfba2f60f8d423",
+      "folder_path": "10_Stocks",
+      "label": "Equity research and position tracking",
+      "seed_source": "manifest"
+    },
+    {
+      "community_id": "e85faee56cfb119c",
+      "folder_path": "10_Stocks/Bloom_Energy",
+      "label": "Bloom Energy (BE) \u2014 solid oxide fuel cells",
+      "seed_source": "manifest"
+    },
+    {
+      "community_id": "5a16844895ae385e",
+      "folder_path": "10_Stocks/IREN",
+      "label": "IREN Limited \u2014 bitcoin mining and AI data centers",
+      "seed_source": "manifest"
+    },
+    {
+      "community_id": "08a08a4cb3179bc6",
+      "folder_path": "20_AI_Speculations",
+      "label": "forward-looking AI bets, not positions",
+      "seed_source": "manifest"
+    }
+  ]
+}

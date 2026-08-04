@@ -1,0 +1,910 @@
+// Agent Runtime — orchestrator for cleanup, sort, chat, and build.
+// Ported from src/agent/runtime.py
+
+import * as crypto from "crypto";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+import { settings, INDEX_DB_SUFFIX } from "../config";
+import { LLMClient, Tool } from "./llm";
+import * as toolImpl from "./tools";
+import {
+  ELIGIBLE,
+  NEAR_DUP,
+  EligibilityFilter,
+  Journal,
+  JournalEntry,
+  OperationContext,
+  Snapshot,
+  Validators,
+  isIgnored,
+  parseIgnorePatterns,
+  tokenizeWords,
+} from "./engine";
+import { Embedder } from "../indexer/embedder";
+import { Indexer } from "../indexer/indexer";
+import { DatabaseManager } from "../indexer/db";
+import { ManifestEntry, ManifestParser, TocReader, CommunitySeed } from "../indexer/manifest";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const CLEANUP_SKILL_FILENAME = "phase-1-note-cleanup.md";
+const TRIAGE_SKILL_FILENAME = "phase-2-inbox-triage.md";
+const SORT_BUDGET_TOTAL = 240;
+const FALLBACK_CONFIDENCE_FLOOR = 0.6;
+const REWRITE_CONTENT_THRESHOLD = 0.2;
+
+export const CHAT_SYSTEM_PROMPT =
+  "You are a research assistant for a personal notes vault. " +
+  "Answer the question using ONLY the context provided. " +
+  "Write in short markdown: brief paragraphs, bullets for lists, " +
+  "and **bold** for key terms. " +
+  "Cite sources with numbered markers like [1] after each claim; " +
+  "never mention file names inline. " +
+  "If the context lacks the answer, say so plainly.";
+
+// ---------------------------------------------------------------------------
+// Skill loading
+// ---------------------------------------------------------------------------
+
+function loadSkill(skillName: string): string {
+  // Skills are bundled at build time; fallback to inline
+  const skillsDir = path.resolve(__dirname, "..", "..", "maintainer-definitions");
+  const skillPath = path.join(skillsDir, skillName);
+  if (fs.existsSync(skillPath)) {
+    return fs.readFileSync(skillPath, "utf-8");
+  }
+  return `# ${skillName}\n\n(Skill file not found)`;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function collectReceipts(history: Array<Record<string, any>>): Array<Record<string, any>> {
+  const receipts: Array<Record<string, any>> = [];
+  for (const msg of history) {
+    if (msg.role === "tool" && msg.content) {
+      const c = msg.content.trim();
+      if (c.startsWith("{")) {
+        try {
+          const d = JSON.parse(c);
+          if (d.receipt_id) receipts.push(d);
+        } catch { /* ignore */ }
+      }
+    }
+  }
+  return receipts;
+}
+
+function pathFor(handle: string): string {
+  const reg = toolImpl.getRegistry();
+  try {
+    return path.relative(reg.vaultRoot, reg.resolve(handle));
+  } catch {
+    return handle;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ProposedChange — mirrors Python dataclass
+// ---------------------------------------------------------------------------
+
+export interface ProposedChange {
+  filePath: string;
+  vaultPath: string;
+  original: string;
+  cleaned: string;
+  validation: Record<string, [boolean, string]>;
+  opsApplied: number;
+  opsRejected: number;
+  changed: boolean;
+}
+
+function makeProposedChange(
+  filePath: string,
+  vaultPath: string,
+  original: string,
+  cleaned: string,
+  validation: Record<string, [boolean, string]>,
+  opsApplied: number = 0,
+  opsRejected: number = 0,
+): ProposedChange {
+  return {
+    filePath,
+    vaultPath,
+    original,
+    cleaned,
+    validation,
+    opsApplied,
+    opsRejected,
+    changed: original !== cleaned,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator: clean
+// ---------------------------------------------------------------------------
+
+export async function runCleanup(
+  filePath: string,
+  vaultPath?: string,
+  preview: boolean = true,
+): Promise<ProposedChange | string> {
+  if (vaultPath) {
+    settings.vaultPath = vaultPath;
+    settings.dbPath = path.join(vaultPath, INDEX_DB_SUFFIX);
+    toolImpl.resetRegistry();
+  }
+
+  const reg = toolImpl.getRegistry();
+  const vault = reg.vaultRoot;
+  const absPath = path.isAbsolute(filePath) ? filePath : path.join(vault, filePath);
+
+  const original = fs.readFileSync(absPath, "utf-8");
+  const beforeHash = crypto.createHash("sha1").update(original).digest("hex").slice(0, 12);
+
+  const skill = loadSkill(CLEANUP_SKILL_FILENAME);
+  const system =
+    "You are a note cleanup assistant. Follow these cleanup rules EXACTLY:\n" +
+    `${skill}\n\n` +
+    "Here is the file to clean. Apply edits using the apply_edits tool:\n" +
+    "  1. Call apply_edits with line-numbered ops (join_lines, insert_header, etc.)\n" +
+    "  2. If apply_edits is unavailable, return the COMPLETE cleaned file as text.\n" +
+    "Prefer apply_edits — it is receipt-verified and safer.\n" +
+    "Preserve all headers, code blocks, images, links, and tables exactly as-is.";
+
+  const filename = path.basename(filePath);
+  const user = `Clean this file (${filename}). The full content is below:\n\n\`\`\`\n${original}\n\`\`\``;
+
+  const tools = [
+    new Tool(
+      toolImpl.APPLY_EDITS_TOOL.name,
+      toolImpl.APPLY_EDITS_TOOL.description,
+      toolImpl.APPLY_EDITS_TOOL.parameters,
+      toolImpl.applyEdits,
+    ),
+  ];
+
+  console.log(`  [clean] Sending ${original.length}-byte file to LLM with apply_edits tool...`);
+  const t0 = Date.now();
+  const client = new LLMClient();
+  toolImpl.resetPreviewResult();
+  const [response, history] = await client.chat(system, user, tools, 3);
+  console.log(`  [clean] LLM returned in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+
+  // Receipt path
+  const receipts = collectReceipts(history);
+  if (receipts.length > 0) {
+    const r = receipts[receipts.length - 1];
+    if (r.error === "ALL_OPS_REJECTED") {
+      return preview
+        ? makeProposedChange(filePath, settings.vaultPath, original, original, {
+            word_conservation: [true, "word_conservation: pass"],
+            headers_preserved: [true, "headers_preserved: pass"],
+            protected_spans: [true, "protected_spans: pass"],
+          }, 0, r.rejected?.length || 0)
+        : "No changes made (all ops rejected).";
+    }
+
+    if (preview) {
+      const cleaned = toolImpl.getLastPreviewResult();
+      const checks = r.validation?.checks || {};
+      const validation: Record<string, [boolean, string]> = {};
+      for (const [k, v] of Object.entries(checks)) {
+        const passed = (v as string).endsWith(": pass");
+        validation[k] = [passed, v as string];
+      }
+
+      // Revert file to original
+      const tmpPath = path.join(path.dirname(absPath), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
+      fs.writeFileSync(tmpPath, original, "utf-8");
+      fs.renameSync(tmpPath, absPath);
+
+      return makeProposedChange(
+        filePath, settings.vaultPath, original, cleaned,
+        validation, r.ops_applied || 0, r.ops_rejected || 0,
+      );
+    } else {
+      // Legacy path
+      if (!r.validation.passed) {
+        const fails = Object.entries(r.validation.checks as Record<string, string>)
+          .filter(([k, v]) => !v.startsWith(k + ": pass"))
+          .map(([k, v]) => `  - ${k}: ${v}`)
+          .join("\n");
+        const warnings = `<!-- ⚠ Cleanup warnings:\n${fails}\n-->\n\n`;
+        prependToFile(absPath, warnings);
+        const afterContent = fs.readFileSync(absPath, "utf-8");
+        const afterHash = crypto.createHash("sha1").update(afterContent).digest("hex").slice(0, 12);
+        return (
+          `Cleanup complete (via apply_edits, with warnings).\n` +
+          `Ops: ${r.ops_applied} applied, ${r.ops_rejected} rejected\n` +
+          `Hash: ${beforeHash} -> ${afterHash}\n` +
+          `Warnings prepended to top of file.`
+        );
+      }
+      return (
+        `Cleanup complete (via apply_edits).\n` +
+        `Ops: ${r.ops_applied} applied, ${r.ops_rejected} rejected\n` +
+        `Hash: ${r.hash_before} -> ${r.hash_after}\n` +
+        `Validation: PASS`
+      );
+    }
+  }
+
+  // Full rewrite path
+  let cleaned = response.trim();
+  if (cleaned.startsWith("```")) {
+    const idx = cleaned.indexOf("\n");
+    if (idx !== -1) cleaned = cleaned.slice(idx + 1);
+    if (cleaned.endsWith("```")) cleaned = cleaned.slice(0, -3).trimEnd();
+    else if (cleaned.includes("\n```")) {
+      cleaned = cleaned.slice(0, cleaned.lastIndexOf("\n```")).trimEnd();
+    }
+  }
+
+  if (!cleaned || cleaned === original) {
+    const msg = "No changes made (file unchanged).";
+    if (preview) {
+      return makeProposedChange(filePath, settings.vaultPath, original, original, {
+        word_conservation: [true, "word_conservation: pass"],
+        headers_preserved: [true, "headers_preserved: pass"],
+        protected_spans: [true, "protected_spans: pass"],
+      });
+    }
+    return msg;
+  }
+
+  // Sanity check
+  const origWords = tokenizeWords(original).length;
+  const cleanWords = tokenizeWords(cleaned).length;
+  if (cleanWords < origWords * REWRITE_CONTENT_THRESHOLD) {
+    const snippet = cleaned.slice(0, 200).replace(/\n/g, " ");
+    const msg = `Cleanup SKIPPED — model returned commentary instead of a cleaned file.`;
+    if (preview) {
+      return makeProposedChange(filePath, settings.vaultPath, original, original, {
+        word_conservation: [true, "word_conservation: pass"],
+        headers_preserved: [true, "headers_preserved: pass"],
+        protected_spans: [true, "protected_spans: pass"],
+      }, 0, 0);
+    }
+    return msg;
+  }
+
+  const validation: Record<string, [boolean, string]> = {
+    word_conservation: Validators.wordConservation(original, cleaned),
+    headers_preserved: Validators.headersPreserved(original, cleaned),
+    protected_spans: Validators.protectedSpansIntact(original, cleaned),
+  };
+
+  if (preview) {
+    return makeProposedChange(filePath, settings.vaultPath, original, cleaned, validation);
+  }
+
+  // Legacy: write the file
+  const tmpPath = path.join(path.dirname(absPath), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
+  fs.writeFileSync(tmpPath, cleaned, "utf-8");
+  fs.renameSync(tmpPath, absPath);
+
+  const allOk = Object.values(validation).every(v => v[0]);
+  if (!allOk) {
+    const fails = Object.entries(validation)
+      .filter(([, v]) => !v[0])
+      .map(([k, v]) => `  - ${k}: ${v[1]}`)
+      .join("\n");
+    const warnings = `<!-- ⚠ Cleanup warnings:\n${fails}\n-->\n\n`;
+    prependToFile(absPath, warnings);
+  }
+
+  return `Cleanup complete (full rewrite).\nSize: ${original.length} -> ${cleaned.length} bytes\nHash: ${beforeHash} -> ${crypto.createHash("sha1").update(cleaned).digest("hex").slice(0, 12)}${allOk ? "\nValidation: PASS" : "\nWarnings prepended to top of file."}`;
+}
+
+// ---------------------------------------------------------------------------
+// Sort result types
+// ---------------------------------------------------------------------------
+
+export interface SortDecision {
+  unitId: string;
+  sourceHandle: string;
+  sourcePath: string;
+  sourceContent: string;
+  action: string;
+  score: number;
+  reason: string;
+  destPath: string;
+  destHeading: string;
+  destContextBefore: string;
+  destContextAfter: string;
+}
+
+export class SortResult {
+  constructor(
+    public decisions: SortDecision[] = [],
+    public manifestConstitution: string = "",
+    public suggestions: string = "",
+    public elapsed: number = 0,
+  ) {}
+
+  get placed(): SortDecision[] {
+    return this.decisions.filter(d => d.action === "placed");
+  }
+
+  get flagged(): SortDecision[] {
+    return this.decisions.filter(d => ["flagged", "near_duplicate", "no_destination"].includes(d.action));
+  }
+
+  toReport(): string {
+    const lines = [
+      `Sort completed in ${Math.round(this.elapsed)}s.`,
+      `${this.placed.length} placed, ${this.flagged.length} flagged.`,
+    ];
+    for (const d of this.decisions) {
+      if (d.action === "placed") {
+        lines.push(`  ${d.sourcePath} -> ${d.destPath} (score=${d.score.toFixed(2)})`);
+      } else if (d.action === "near_duplicate") {
+        lines.push(`  ${d.sourcePath}: near-duplicate at ${d.destPath}`);
+      } else if (d.action === "no_destination") {
+        lines.push(`  ${d.sourcePath}: no eligible candidates`);
+      } else {
+        lines.push(`  ${d.sourcePath}: ${d.reason}`);
+      }
+    }
+    if (this.suggestions) {
+      lines.push(`\nSuggestions:\n${this.suggestions}`);
+    }
+    return lines.join("\n");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator: sort
+// ---------------------------------------------------------------------------
+
+export async function runTriage(
+  vaultPath?: string,
+  inboxFolder?: string,
+): Promise<SortResult | string> {
+  toolImpl.resetRegistry();
+  if (vaultPath) {
+    settings.vaultPath = vaultPath;
+    settings.dbPath = path.join(vaultPath, INDEX_DB_SUFFIX);
+  }
+
+  const startTime = Date.now();
+  const journal = new Journal();
+  const inboxSnapshot = new Map<string, string>();
+
+  let inboxInfo: string;
+  if (inboxFolder) {
+    inboxInfo = toolImpl.listFiles(inboxFolder);
+    if (inboxInfo.startsWith("DIR_NOT_FOUND")) {
+      return `Inbox folder not found: ${inboxFolder}`;
+    }
+  } else {
+    inboxInfo = toolImpl.findInbox();
+    if (inboxInfo.startsWith("NO_INBOX")) {
+      return `Inbox not found.\n${inboxInfo}`;
+    }
+  }
+
+  const manifestConstitution = loadManifestConstitution();
+  const inboxFiles = inboxInfo.match(/f_\d{4}/g) || [];
+  const units = discoverUnits(inboxFiles);
+  if (units.length === 0) return "Inbox is empty.";
+
+  // Snapshot inbox state
+  const reg = toolImpl.getRegistry();
+  for (const h of inboxFiles) {
+    try {
+      const p = reg.resolve(h);
+      inboxSnapshot.set(h, crypto.createHash("sha1").update(fs.readFileSync(p)).digest("hex"));
+    } catch { /* skip */ }
+  }
+
+  const decisions: SortDecision[] = [];
+  const opCtx: OperationContext = {
+    sourceSet: new Set(inboxFiles),
+    sourceIdsByHandle: {},
+    registry: reg,
+  };
+
+  for (const unit of units) {
+    if ((Date.now() - startTime) / 1000 > SORT_BUDGET_TOTAL) break;
+
+    const ik = `sha1:${crypto.createHash("sha1").update(unit.text).digest("hex").slice(0, 16)}`;
+    if (journal.hasIdempotencyKey(ik)) continue;
+
+    const sourcePath = pathFor(unit.handle);
+    const [candidates, nearDups] = await scoreCandidates(unit.text, opCtx, unit.handle);
+    const filteredCandidates = filterIgnoredCandidates(
+      candidates,
+      parseIgnorePatterns(settings.ignorePatterns)
+    );
+
+    for (const nd of nearDups) {
+      const ndPath = pathFor(nd.handle || "");
+      decisions.push({
+        unitId: unit.id, sourceHandle: unit.handle,
+        sourcePath, sourceContent: unit.text,
+        action: "near_duplicate", score: nd.score || 0,
+        destPath: ndPath, reason: "near-duplicate",
+        destHeading: "", destContextBefore: "", destContextAfter: "",
+      });
+      journal.append(new JournalEntry(
+        unit.id, `${ik}-nd`, unit.handle, "flagged",
+        nd.handle, undefined, undefined, `near-duplicate: ${(nd.score || 0).toFixed(3)}`,
+      ));
+    }
+
+    if (filteredCandidates.length === 0) {
+      decisions.push({
+        unitId: unit.id, sourceHandle: unit.handle,
+        sourcePath, sourceContent: unit.text,
+        action: "no_destination", reason: "no eligible candidates",
+        score: 0, destPath: "", destHeading: "", destContextBefore: "", destContextAfter: "",
+      });
+      journal.append(new JournalEntry(unit.id, ik, unit.handle, "flagged", undefined, undefined, undefined, "no-eligible-candidates"));
+      continue;
+    }
+
+    const top = filteredCandidates[0];
+    if (top.score >= FALLBACK_CONFIDENCE_FLOOR) {
+      const destPath = pathFor(top.handle);
+      const destContext = readDestContext(top.handle, top.heading || "");
+      decisions.push({
+        unitId: unit.id, sourceHandle: unit.handle,
+        sourcePath, sourceContent: unit.text,
+        action: "placed", score: top.score,
+        destPath, destHeading: top.heading || "",
+        destContextBefore: destContext.before,
+        destContextAfter: destContext.after,
+        reason: "",
+      });
+      journal.append(new JournalEntry(unit.id, ik, unit.handle, "placed", top.handle, top.heading, "r_triage"));
+    } else {
+      decisions.push({
+        unitId: unit.id, sourceHandle: unit.handle,
+        sourcePath, sourceContent: unit.text,
+        action: "flagged", score: top.score,
+        reason: `low-confidence: ${top.score.toFixed(3)}`,
+        destPath: "", destHeading: "", destContextBefore: "", destContextAfter: "",
+      });
+      journal.append(new JournalEntry(unit.id, ik, unit.handle, "flagged", undefined, undefined, undefined, `low-confidence: ${top.score.toFixed(3)}`));
+    }
+  }
+
+  // Generate suggestions
+  let suggestions = "";
+  try {
+    const sug = await generateSuggestions(journal, manifestConstitution);
+    if (sug) suggestions = sug;
+  } catch { /* ignore */ }
+
+  // Enforce read-only contract
+  for (const [h, beforeHash] of inboxSnapshot) {
+    try {
+      const p = reg.resolve(h);
+      const afterHash = crypto.createHash("sha1").update(fs.readFileSync(p)).digest("hex");
+      if (afterHash !== beforeHash) {
+        throw new Error(`Sort authority violation: ${pathFor(h)} was modified during triage.`);
+      }
+    } catch (e: any) {
+      if (e.message?.includes("authority violation")) throw e;
+    }
+  }
+
+  journal.clear();
+
+  return new SortResult(decisions, manifestConstitution, suggestions, (Date.now() - startTime) / 1000);
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator: chat
+// ---------------------------------------------------------------------------
+
+export async function runChat(question: string): Promise<string> {
+  const embedder = new Embedder(settings);
+  const q = await embedder.embed(question);
+  const db = new DatabaseManager(settings.dbPath);
+  const results = db.searchSimilar(q, 5);
+  if (results.length === 0) return "No relevant information found.";
+
+  const ctx = results
+    .map(r => `From ${r.filePath} (${r.headingPath}, lines ${r.lineStart}-${r.lineEnd}):\n${r.text}`)
+    .join("\n\n");
+
+  const [answer] = await new LLMClient().chat(
+    CHAT_SYSTEM_PROMPT,
+    `Context:\n${ctx}\n\nQuestion: ${question}`,
+    null,
+  );
+  return answer;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator: build
+// ---------------------------------------------------------------------------
+
+export async function runBuild(vaultPath: string): Promise<string> {
+  settings.vaultPath = vaultPath;
+  settings.dbPath = path.join(vaultPath, INDEX_DB_SUFFIX);
+  toolImpl.resetRegistry();
+
+  console.log(`  [build] Building index for vault: ${vaultPath}`);
+  console.log(`  [build] Database path: ${settings.dbPath}`);
+  const t0 = Date.now();
+
+  const manifestPath = new TocReader(vaultPath).findManifest();
+  let manifestGenerated = false;
+
+  if (!manifestPath) {
+    console.log("  [build] WARNING: No _manifest.md found — building non-manifest index first, then deriving one.");
+  }
+
+  const indexer = new Indexer(settings);
+  await indexer.build();
+  const files = indexer.scanner.scan().length;
+
+  if (!manifestPath) {
+    try {
+      const generated = await generateManifest(vaultPath);
+      manifestGenerated = true;
+      console.log(`  [build] Manifest generated: ${generated}`);
+      const indexer2 = new Indexer(settings);
+      await indexer2.build();
+    } catch (e: any) {
+      console.log(`  [build] Manifest generation failed (${e.message}) — index remains degraded.`);
+    }
+  }
+
+  const elapsed = (Date.now() - t0) / 1000;
+  console.log(`  [build] Complete: ${files} files indexed in ${elapsed.toFixed(0)}s at ${settings.dbPath}`);
+
+  let msg = `Index built: ${files} files indexed in ${elapsed.toFixed(0)}s at ${settings.dbPath}`;
+  if (manifestGenerated) {
+    msg = `WARNING: No _manifest.md was found. A manifest was derived from the index and written to the vault — review it before running sort. ${msg}`;
+  }
+  return msg;
+}
+
+// ---------------------------------------------------------------------------
+// Manifest generation
+// ---------------------------------------------------------------------------
+
+export async function generateManifest(vaultPath: string): Promise<string> {
+  const db = new DatabaseManager(settings.dbPath);
+  // We access the db directly via the connect method
+  const conn = (db as any).connect() as import("better-sqlite3").Database;
+  const patterns = parseIgnorePatterns(settings.ignorePatterns);
+
+  const rows = conn.prepare(
+    "SELECT folder, path FROM FILES WHERE folder != '' ORDER BY folder, path"
+  ).all() as any[];
+
+  const folderFiles = new Map<string, string[]>();
+  for (const { folder, path: fpath } of rows) {
+    if (pathMatchesPatterns(folder, patterns)) continue;
+    const rel = path.relative(folder, fpath);
+    if (!folderFiles.has(folder)) folderFiles.set(folder, []);
+    folderFiles.get(folder)!.push(rel);
+  }
+
+  if (folderFiles.size === 0) {
+    throw new Error("No indexed folders found — cannot derive a manifest.");
+  }
+
+  // Syllabus
+  const syllabusLines = ["## Vault Tree"];
+  const sortedFolders = [...folderFiles.keys()].sort();
+  for (const folder of sortedFolders) {
+    const depth = folder.split(path.sep).length - 1;
+    syllabusLines.push("  ".repeat(depth) + folder + "/");
+    for (const f of folderFiles.get(folder)!) {
+      syllabusLines.push("  ".repeat(depth + 1) + f);
+    }
+  }
+
+  for (const folder of sortedFolders) {
+    const wikilinks = conn.prepare(`
+      SELECT e.name, COUNT(*) as cnt
+      FROM ENTITIES e
+      JOIN SECTION_ENTITIES se ON e.entity_id = se.entity_id
+      JOIN SECTIONS s ON se.section_key = s.node_key
+      JOIN FILES f ON s.file_id = f.file_id
+      WHERE f.folder = ? AND e.type = 'wikilink'
+      GROUP BY e.name ORDER BY cnt DESC LIMIT 6
+    `).all(folder) as any[];
+
+    const headings = conn.prepare(`
+      SELECT s.heading_path, s.text
+      FROM SECTIONS s JOIN FILES f ON s.file_id = f.file_id
+      WHERE f.folder = ? AND s.heading_path != '' AND s.text != ''
+      LIMIT 3
+    `).all(folder) as any[];
+
+    syllabusLines.push(`\n### ${folder}/`);
+    if (wikilinks.length > 0) {
+      syllabusLines.push("  Wikilinks: " + wikilinks.slice(0, 5).map((w: any) => `[[${w.name}]]`).join(", "));
+    }
+    for (const { heading_path, text } of headings) {
+      const snippet = (text as string).slice(0, 100).replace(/\n/g, " ");
+      syllabusLines.push(`  - ${heading_path}: ${snippet}...`);
+    }
+  }
+  const syllabus = syllabusLines.join("\n");
+
+  // LLM synthesis
+  const scaffoldLines = sortedFolders.map(f => `${f}/ — `);
+  const scaffold = scaffoldLines.join("\n");
+
+  const system =
+    "Complete each line. The part before ' — ' is a folder path; " +
+    "write the folder's PURPOSE after it, in at most 8 words.\n" +
+    "Rules:\n- NEVER list file names. NEVER repeat the syllabus.\n" +
+    "- Use only information present in the syllabus — no speculation.\n" +
+    "- If a folder's content is ambiguous, write '(needs review)'.\n" +
+    "Output ONLY the completed lines, one per folder, in the given order.";
+
+  let purposes: Record<string, string> = {};
+  try {
+    const [response] = await new LLMClient().chat(
+      system,
+      `Syllabus:\n\n${syllabus}\n\nComplete these lines:\n${scaffold}`,
+      null, 1,
+    );
+    purposes = parseLlmPurposes(response, new Set(sortedFolders));
+    console.log(`  [manifest-gen] LLM derived ${Object.keys(purposes).length} folder purposes`);
+  } catch (e: any) {
+    console.log(`  [manifest-gen] LLM synthesis failed (${e.message}) — using folder-name hints.`);
+  }
+
+  // Render §5.1 manifest
+  const lines = ["# vault <!-- Auto-generated from GraphRAG index — review and edit -->"];
+  for (const folder of sortedFolders) {
+    const folderDepth = folder.split(path.sep).length - 1;
+    const parenMatch = folder.match(/\(([^)]+)\)/);
+    let purpose: string;
+    if (parenMatch) {
+      purpose = parenMatch[1].trim();
+    } else {
+      purpose = purposes[folder] || "(needs review)";
+    }
+    const indent = "##" + "#".repeat(folderDepth);
+    lines.push(`${indent} ${folder}/ <!-- ${purpose} -->`);
+    for (const f of folderFiles.get(folder)!) {
+      lines.push("     " + f);
+    }
+    lines.push("");
+  }
+
+  const manifestContent = lines.join("\n").trimEnd() + "\n";
+  const manifestPath = path.join(vaultPath, settings.manifest.filename);
+  const tmpPath = path.join(vaultPath, `.tmp-${crypto.randomBytes(4).toString("hex")}`);
+  fs.writeFileSync(tmpPath, manifestContent, "utf-8");
+  fs.renameSync(tmpPath, manifestPath);
+  return manifestPath;
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function prependToFile(filePath: string, prefix: string): void {
+  const original = fs.readFileSync(filePath, "utf-8");
+  const combined = prefix + original;
+  const tmpPath = path.join(path.dirname(filePath), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
+  fs.writeFileSync(tmpPath, combined, "utf-8");
+  fs.renameSync(tmpPath, filePath);
+}
+
+function readDestContext(handle: string, heading: string, contextLines: number = 5): { before: string; after: string } {
+  const reg = toolImpl.getRegistry();
+  try {
+    const content = reg.readFile(handle);
+    const rawLines = content.split("\n").map(line => {
+      const m = line.match(/^\s*\d+:\s?(.*)/);
+      return m ? m[1] : line;
+    });
+
+    if (!heading) {
+      return {
+        before: rawLines.slice(0, 1).join("\n"),
+        after: rawLines.slice(1, contextLines + 1).join("\n"),
+      };
+    }
+
+    const headingLower = heading.toLowerCase().trim();
+    let headingIdx = -1;
+    for (let i = 0; i < rawLines.length; i++) {
+      const stripped = rawLines[i].trim();
+      if (stripped.replace(/^#+\s*/, "").toLowerCase() === headingLower ||
+          headingLower.includes(stripped.toLowerCase())) {
+        headingIdx = i;
+        break;
+      }
+    }
+
+    if (headingIdx < 0) return { before: "", after: "" };
+
+    const start = Math.max(0, headingIdx - contextLines);
+    const end = Math.min(rawLines.length, headingIdx + contextLines + 1);
+    return {
+      before: rawLines.slice(start, headingIdx).join("\n"),
+      after: rawLines.slice(headingIdx, end).join("\n"),
+    };
+  } catch {
+    return { before: "", after: "" };
+  }
+}
+
+function discoverUnits(handles: string[]): Array<{ id: string; handle: string; text: string }> {
+  const units: Array<{ id: string; handle: string; text: string }> = [];
+  let ctr = 0;
+  for (const h of handles) {
+    const content = toolImpl.readFile(h);
+    if (content.startsWith("READ_ERROR") || content.startsWith("RESOLVE_ERROR")) continue;
+    const lines = content.split("\n").map(line => {
+      const m = line.match(/^\s*\d+:\s?(.*)/);
+      return m ? m[1] : (line.startsWith("---") ? "" : line);
+    });
+    ctr += 1;
+    units.push({ id: `u_${String(ctr).padStart(4, "0")}`, handle: h, text: lines.join("\n") });
+  }
+  return units;
+}
+
+async function scoreCandidates(
+  text: string,
+  opCtx: OperationContext,
+  srcHandle: string,
+  topK: number = 5,
+): Promise<[Array<Record<string, any>>, Array<Record<string, any>>]> {
+  const OVERSCAN = 3;
+  const nearDups: Array<Record<string, any>> = [];
+  const eligible: Array<Record<string, any>> = [];
+
+  try {
+    const embedder = new Embedder(settings);
+    const q = await embedder.embed(text);
+    const db = new DatabaseManager(settings.dbPath);
+    const results = db.searchSimilar(q, topK * OVERSCAN);
+
+    for (const r of results) {
+      const reg = toolImpl.getRegistry();
+      const fp = path.join(reg.vaultRoot, r.filePath);
+      let h: string;
+      try { h = reg.getHandle(fp); } catch { h = r.filePath; }
+
+      const c: Record<string, any> = {
+        handle: h, filePath: r.filePath, heading: r.headingPath,
+        score: r.score, snippet: r.text.slice(0, 150),
+        contentHash: r.contentHash,
+        fileContentHash: r.fileContentHash,
+      };
+
+      const d = EligibilityFilter.run(c, opCtx, srcHandle);
+      if (d === NEAR_DUP) {
+        nearDups.push(c);
+      } else if (d === ELIGIBLE) {
+        eligible.push(c);
+        if (eligible.length >= topK) break;
+      }
+    }
+  } catch { /* ignore */ }
+
+  return [eligible, nearDups];
+}
+
+function pathMatchesPatterns(relPath: string, patterns: string[]): boolean {
+  const normalized = relPath.replace(/\\/g, "/");
+  if (isIgnored(relPath, patterns)) return true;
+  return patterns.some(p => {
+    const dir = p.replace(/\/$/, "");
+    if (!dir) return false;
+    return normalized === dir || normalized.startsWith(dir + "/");
+  });
+}
+
+function filterIgnoredCandidates(candidates: Array<Record<string, any>>, patterns: string[]): Array<Record<string, any>> {
+  if (patterns.length === 0) return candidates;
+  return candidates.filter(c => !pathMatchesPatterns(c.filePath || "", patterns));
+}
+
+function loadManifestConstitution(): string {
+  const vaultPath = settings.vaultPath;
+  if (!vaultPath) return "";
+
+  try {
+    const parser = new ManifestParser(vaultPath);
+    const manifestPath = parser.findManifest();
+    if (!manifestPath) return "";
+    const entries = parser.parse(manifestPath);
+    if (entries.length === 0) return "";
+
+    const lines = ["## Vault Manifest — Folder Purposes"];
+    for (const entry of entries) {
+      appendFolderLines(lines, entry, "");
+    }
+
+    const ctd = parser.getContentTypeDefaults(manifestPath);
+    if (Object.keys(ctd).length > 0) {
+      lines.push("\n## Content Types (inferred from naming)");
+      for (const [folder, ctype] of Object.entries(ctd).sort()) {
+        lines.push(`- \`${folder}\` → ${ctype}`);
+      }
+    }
+    return lines.join("\n");
+  } catch (e: any) {
+    console.log(`  [manifest] Error loading constitution: ${e.message}`);
+    return "";
+  }
+}
+
+function appendFolderLines(lines: string[], entry: ManifestEntry, indent: string): void {
+  const purpose = entry.purpose || "(no purpose listed)";
+  lines.push(`${indent}- \`${entry.folderPath}\` — ${purpose}`);
+  for (const f of entry.files) {
+    const suffix = f.comment ? ` — ${f.comment}` : "";
+    lines.push(`${indent}    - \`${f.name}\`${suffix}`);
+  }
+  for (const child of entry.children) {
+    appendFolderLines(lines, child, indent + "    ");
+  }
+}
+
+async function generateSuggestions(journal: Journal, manifestConstitution: string): Promise<string> {
+  const entries = journal.allEntries();
+  const placed = entries.filter(e => e.state === "placed").length;
+  const flagged = entries.filter(e => e.state === "flagged").length;
+  const stats = `Placed: ${placed}, Flagged: ${flagged}`;
+
+  const task = `Suggest 2-3 improvements based on this sort:\n${stats}\nList what, why, and risk level.`;
+  let system = "You suggest vault organization improvements.";
+  if (manifestConstitution) {
+    system += `\n\nVault structure:\n${manifestConstitution}`;
+  }
+
+  try {
+    const [r] = await new LLMClient().chat(system, task, null, 1);
+    return r.trim();
+  } catch {
+    return "";
+  }
+}
+
+function parseLlmPurposes(response: string, knownFolders: Set<string>): Record<string, string> {
+  const purposes: Record<string, string> = {};
+  const known = new Map<string, string>();
+  const knownLower = new Map<string, string>();
+  for (const f of knownFolders) {
+    known.set(f.replace(/\/$/, ""), f);
+    knownLower.set(f.replace(/\/$/, "").toLowerCase(), f);
+  }
+
+  for (const rawLine of response.trim().split("\n")) {
+    const line = rawLine.trim().replace(/^[*\-]\s*/, "");
+    if (!line || !line.includes("—")) continue;
+    const [token, ...rest] = line.split("—");
+    const purpose = rest.join("—").trim();
+    const cleanToken = token.trim().replace(/\/$/, "");
+    if (!purpose || purpose.startsWith("[") || purpose.length > 200) continue;
+
+    let folder: string | undefined;
+    if (known.has(cleanToken)) {
+      folder = known.get(cleanToken);
+    } else if (knownLower.has(cleanToken.toLowerCase())) {
+      folder = knownLower.get(cleanToken.toLowerCase());
+    } else {
+      for (const [k, f] of known) {
+        if (k.startsWith(cleanToken + " (") || k.startsWith(cleanToken + "/")) {
+          folder = f;
+          break;
+        }
+      }
+    }
+    if (folder) purposes[folder] = purpose;
+  }
+  return purposes;
+}
