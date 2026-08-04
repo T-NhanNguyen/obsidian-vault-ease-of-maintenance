@@ -116,9 +116,3 @@ Set the ignore patterns in the plugin Settings tab. The plugin skips matching fi
 | `main.ts` or `src/*.ts` | Yes | Must compile to `main.js` before Obsidian loads it. |
 | `styles.css` | No | Loaded at startup. Reload Obsidian only. |
 | `manifest.json` | No | Loaded once at startup. Reload Obsidian only. |
-
-## Architecture
-
-This plugin is the TypeScript port of the Note Maintainer Python codebase. The port follows Path C from the original design. All logic runs inside Obsidian.
-
-The original design used a Python HTTP server on `127.0.0.1:8678`. The Obsidian plugin posted commands to it. The community store cannot install Python or start a server. The port moved the server logic into the plugin. The port removed the server, the CLI, the Docker files, and the browser preview pages. The native review UI replaced the browser tabs.
