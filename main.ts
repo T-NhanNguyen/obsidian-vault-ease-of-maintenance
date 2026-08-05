@@ -261,6 +261,9 @@ export default class VaultMaintenancePlugin extends Plugin {
       name: "Chat with your vault",
       callback: () => this.handleChat(),
     });
+
+    // Ribbon entry point — same action as the command palette.
+    this.addRibbonIcon("message-circle", "Chat with your vault", () => this.handleChat());
   }
 
   onunload(): void {
