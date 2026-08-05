@@ -7,7 +7,6 @@ import { App, Component, Modal } from "obsidian";
 import type { ReviewHost } from "./review-host";
 import { ReviewCore } from "./review-core";
 import { renderAgentMarkdown } from "./render-markdown";
-import { getDefaultClient } from "./server-client";
 import type { ReviewSpec } from "./types";
 
 export class ReviewModal extends Modal {
@@ -37,7 +36,7 @@ export class ReviewModal extends Modal {
             closeTab: () => undefined,
             setTitle: (title) => this.titleEl.setText(title),
         };
-        this.core = new ReviewCore(host, getDefaultClient());
+        this.core = new ReviewCore(host);
         void this.core.open(this.spec);
     }
 

@@ -3,10 +3,11 @@
 // (chat has its own tab; clean and sort share the pending tab), and the
 // render-once rule for the chat session so an in-flight answer survives a
 // tab switch.
+//
+// Path C: every spec carries its data in memory (no server round trip), so
+// the core simply dispatches to the per-kind renderers.
 
 import type { ReviewHost, ReviewTabId } from "./review-host";
-import type { ServerClient } from "./server-client";
-import { getDefaultClient } from "./server-client";
 import type { ReviewSpec } from "./types";
 import { specKey } from "./types";
 import { renderCleanReview } from "./clean-review";
@@ -17,14 +18,12 @@ const LOADING_LABEL = "Loading review…";
 
 export class ReviewCore {
     private readonly host: ReviewHost;
-    private readonly client: ServerClient;
     private openedSpec: ReviewSpec | null = null;
     private activeSpecKey: string | null = null;
     private chatRendered = false;
 
-    constructor(host: ReviewHost, client?: ServerClient) {
+    constructor(host: ReviewHost) {
         this.host = host;
-        this.client = client ?? getDefaultClient();
     }
 
     get currentSpec(): ReviewSpec | null {
@@ -53,11 +52,11 @@ export class ReviewCore {
         this.showLoading(panel);
         try {
             if (spec.kind === "clean") {
-                await renderCleanReview(this.host, this.client, spec.pendingId);
+                await renderCleanReview(this.host, spec);
             } else if (spec.kind === "sort") {
-                await renderSortReview(this.host, this.client, spec.sortId);
+                await renderSortReview(this.host, spec.result);
             } else {
-                renderChatReview(this.host, this.client);
+                renderChatReview(this.host, spec.query);
                 this.chatRendered = true;
             }
         } catch (error) {

@@ -527,6 +527,7 @@
     display: flex;
     gap: 4px;
     padding: 6px 8px 0;
+    background: var(--background-secondary);
     border-bottom: 1px solid var(--background-modifier-border);
     flex-shrink: 0;
 }
@@ -540,27 +541,36 @@
     cursor: pointer;
     font-size: var(--font-ui-small);
     color: var(--text-muted);
+    background: transparent;
     user-select: none;
 }
 
 .nm-tab:hover {
     background: var(--background-modifier-hover);
+    color: var(--text-normal);
 }
 
 .nm-tab.nm-tab-active {
     color: var(--text-normal);
-    background: var(--background-secondary);
+    background: var(--background-primary);
 }
 
 .nm-tab-close {
     border: none;
     background: transparent;
+    box-shadow: none;
     color: var(--text-muted);
     cursor: pointer;
     font-size: 14px;
     line-height: 1;
-    padding: 0 2px;
-    border-radius: 3px;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
 }
 
 .nm-tab-close:hover {

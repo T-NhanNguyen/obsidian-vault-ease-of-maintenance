@@ -1,8 +1,8 @@
-// Chat renderer — a minimal RAG chat UI wired to POST /chat/query.
-// Container-agnostic: renders the message list + input into any host.
+// Chat renderer — a minimal RAG chat UI wired to an in-memory query
+// function (Path C: no server POST). Container-agnostic: renders the
+// message list + input into any host.
 
 import type { ReviewHost } from "./review-host";
-import type { ServerClient } from "./server-client";
 import type { ChatQueryResponse, ChatQueryResult } from "./types";
 
 const CHAT_TITLE = "Chat";
@@ -13,7 +13,7 @@ const QUERY_FAILED_PREFIX = "Query failed: ";
 
 export function renderChatReview(
     host: ReviewHost,
-    client: ServerClient
+    query: (question: string) => Promise<ChatQueryResponse>
 ): void {
     const container = host.contentEl;
     container.empty();
@@ -42,7 +42,7 @@ export function renderChatReview(
         const question = input.value.trim();
         if (!question) return;
         input.value = "";
-        void runQuery(question, messages, sendBtn, input, client, host);
+        void runQuery(question, messages, sendBtn, input, query, host);
     }
 }
 
@@ -51,7 +51,7 @@ async function runQuery(
     messages: HTMLElement,
     sendBtn: HTMLButtonElement,
     input: HTMLInputElement,
-    client: ServerClient,
+    query: (question: string) => Promise<ChatQueryResponse>,
     host: ReviewHost
 ): Promise<void> {
     await appendMessage(messages, "user", question, host);
@@ -60,10 +60,7 @@ async function runQuery(
     const loading = messages.createDiv({ cls: "nm-msg nm-msg-assistant nm-msg-loading", text: LOADING_LABEL });
 
     try {
-        const data = await client.post<ChatQueryResponse>("/chat/query", {
-            question,
-            top_k: 5,
-        });
+        const data = await query(question);
         loading.remove();
         const answerEl = await appendMessage(messages, "assistant", data.answer || "", host);
         renderSources(answerEl, data.results || []);

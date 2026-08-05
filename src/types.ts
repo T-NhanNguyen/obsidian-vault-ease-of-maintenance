@@ -1,19 +1,39 @@
 // Shared payload and spec types for the native review UI.
-// These mirror the JSON the server exposes: /preview/<id>/content,
-// /sort-review/<id>/content, /chat/query, and the accept/reject endpoints.
+// Path C: no server — every review spec carries its data in memory.
+// The two containers (modal + sidebar) render the same specs through ReviewCore.
+
+export interface CleanProposalPayload {
+    filePath: string;
+    vaultPath: string;
+    original: string;
+    cleaned: string;
+    validation: { passed: boolean; checks: Record<string, string> };
+    opsApplied: number;
+    opsRejected: number;
+}
+
+export interface CleanResolveResult {
+    ok: boolean;
+    message: string;
+}
 
 export interface CleanReviewSpec {
     readonly kind: "clean";
-    readonly pendingId: string;
+    readonly id: string;
+    readonly proposal: CleanProposalPayload;
+    /** Performs accept (write cleaned + .bak) or reject (no-op). */
+    readonly onResolve: (action: "accept" | "reject") => Promise<CleanResolveResult>;
 }
 
 export interface SortReviewSpec {
     readonly kind: "sort";
-    readonly sortId: string;
+    readonly id: string;
+    readonly result: SortResultPayload;
 }
 
 export interface ChatReviewSpec {
     readonly kind: "chat";
+    readonly query: (question: string) => Promise<ChatQueryResponse>;
 }
 
 export type ReviewSpec = CleanReviewSpec | SortReviewSpec | ChatReviewSpec;
@@ -21,21 +41,12 @@ export type ReviewSpec = CleanReviewSpec | SortReviewSpec | ChatReviewSpec;
 export function specKey(spec: ReviewSpec): string {
     switch (spec.kind) {
         case "clean":
-            return `clean:${spec.pendingId}`;
+            return `clean:${spec.id}`;
         case "sort":
-            return `sort:${spec.sortId}`;
+            return `sort:${spec.id}`;
         case "chat":
             return "chat";
     }
-}
-
-export interface PendingEntryPayload {
-    pending_id: string;
-    file_path: string;
-    meta: Record<string, unknown>;
-    diff_html: string;
-    original: string;
-    cleaned: string;
 }
 
 export interface SortDecisionPayload {
@@ -72,10 +83,4 @@ export interface ChatQueryResult {
 export interface ChatQueryResponse {
     answer: string;
     results: ChatQueryResult[];
-}
-
-export interface ReviewActionResponse {
-    status: "accepted" | "rejected" | "expired" | "error";
-    message: string;
-    freshness_warning?: boolean;
 }

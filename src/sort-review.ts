@@ -1,9 +1,8 @@
-// Sort review renderer — fetches the sort JSON and renders stats badges and
-// one card per triage decision, mirroring the server-rendered sort page but
-// built with Obsidian-native DOM (textContent escaping, theme variables).
+// Sort review renderer — renders stats badges and one card per triage
+// decision from an in-memory SortResultPayload (Path C: no server fetch).
+// Built with Obsidian-native DOM (textContent escaping, theme variables).
 
 import type { ReviewHost } from "./review-host";
-import type { ServerClient } from "./server-client";
 import type { SortDecisionPayload, SortResultPayload } from "./types";
 
 const SORT_REVIEW_TITLE = "Sort Review";
@@ -17,12 +16,8 @@ const ACTION_BADGE_CLASS: Record<string, string> = {
 
 export async function renderSortReview(
     host: ReviewHost,
-    client: ServerClient,
-    sortId: string
+    payload: SortResultPayload
 ): Promise<void> {
-    const payload = await client.get<SortResultPayload>(
-        `/sort-review/${encodeURIComponent(sortId)}/content`
-    );
     const container = host.contentEl;
     container.empty();
     host.setTitle(SORT_REVIEW_TITLE);

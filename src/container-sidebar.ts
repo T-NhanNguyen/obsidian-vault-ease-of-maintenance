@@ -12,7 +12,6 @@ import { App, ItemView, Notice, ViewStateResult, WorkspaceLeaf } from "obsidian"
 import type { ReviewHost, ReviewTabId } from "./review-host";
 import { ReviewCore } from "./review-core";
 import { renderAgentMarkdown } from "./render-markdown";
-import { getDefaultClient } from "./server-client";
 import type { ReviewSpec } from "./types";
 
 export const REVIEW_VIEW_TYPE = "note-maintainer-review";
@@ -23,6 +22,7 @@ const TAB_LABELS: Record<ReviewTabId, string> = {
 };
 
 const EMPTY_STATE_TEXT = "No open tabs. Open Chat or run a cleanup or sort.";
+const VIEW_NAME = "Vault Ease of Maintenance";
 
 interface ReviewViewState {
     spec?: ReviewSpec;
@@ -36,8 +36,9 @@ interface TabEntry {
 
 export class ReviewView extends ItemView {
     private core: ReviewCore | null = null;
-    private spec: ReviewSpec = { kind: "chat" };
-    private viewTitle = "Note Maintainer";
+    // No spec until a command opens one — tabs must not appear at startup.
+    private spec: ReviewSpec | null = null;
+    private viewTitle = VIEW_NAME;
     private tabBar: HTMLElement | null = null;
     private panelsEl: HTMLElement | null = null;
     private activePanel: HTMLElement | null = null;
@@ -56,11 +57,13 @@ export class ReviewView extends ItemView {
     }
 
     getIcon(): string {
-        return "wrench";
+        return ""; // text-only header: the pane is identified by its name
     }
 
     getState(): ReviewViewState {
-        return { spec: this.spec };
+        // Do not persist the open spec — on restart the pane must stay empty
+        // until a command opens a review again.
+        return {};
     }
 
     async setState(state: ReviewViewState, result: ViewStateResult): Promise<void> {
@@ -95,8 +98,18 @@ export class ReviewView extends ItemView {
     }
 
     private async reopen(): Promise<void> {
-        this.core ??= new ReviewCore(this.makeHost(), getDefaultClient());
+        if (!this.spec) {
+            this.showEmptyState();
+            return;
+        }
+        this.core ??= new ReviewCore(this.makeHost());
         await this.core.open(this.spec);
+    }
+
+    private showEmptyState(): void {
+        this.panelsEl?.empty();
+        this.panelsEl?.createDiv({ cls: "nm-tab-empty", text: EMPTY_STATE_TEXT });
+        this.activePanel = null;
     }
 
     // ------------------------------------------------------------------
@@ -109,6 +122,8 @@ export class ReviewView extends ItemView {
     }
 
     private activateTab(id: ReviewTabId): HTMLElement {
+        // A tab is now open — the "no tabs" empty state must go.
+        this.panelsEl?.querySelectorAll(".nm-tab-empty").forEach((el) => el.remove());
         let tab = this.tabs.get(id);
         if (!tab) {
             tab = this.createTab(id);
@@ -179,9 +194,7 @@ export class ReviewView extends ItemView {
                 renderAgentMarkdown(view.app, view, markdown, el),
             activateTab: (id) => view.activateTab(id),
             closeTab: (id) => view.closeTab(id),
-            setTitle: (title) => {
-                view.viewTitle = title;
-            },
+            setTitle: () => undefined, // the pane header keeps the static project name
         };
     }
 }

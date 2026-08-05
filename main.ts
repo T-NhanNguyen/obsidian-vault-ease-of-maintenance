@@ -1,34 +1,35 @@
 // Obsidian Vault Ease of Maintenance Plugin
 // All-in-plugin GraphRAG indexer + LLM-driven agents.
 // Path C: No server, no Python, no Docker — runs entirely inside Obsidian.
+//
+// Clean/sort/chat reviews render through the shared ReviewCore into one of
+// two interchangeable containers — a docked right sidebar pane (default) or
+// a centered modal overlay — chosen in the plugin settings.
 
-import {
-  App,
-  Modal,
-  Notice,
-  Plugin,
-  PluginSettingTab,
-  Setting,
-  ItemView,
-  WorkspaceLeaf,
-  TFile,
-  MarkdownRenderer,
-} from "obsidian";
-import { updateSettings, settings, resolveApiKey, Settings, defaultSettings } from "./src/config";
-import { Indexer } from "./src/indexer/indexer";
+import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { updateSettings, settings } from "./src/config";
 import {
   runCleanup,
   runTriage,
-  runChat,
   runBuild,
+  runChatQuery,
   SortResult,
   ProposedChange,
 } from "./src/agent/runtime";
 import { resetRegistry } from "./src/agent/tools";
+import { openReviewInModal } from "./src/container-modal";
+import {
+  openReviewInSidebar,
+  REVIEW_VIEW_TYPE,
+  ReviewView,
+} from "./src/container-sidebar";
+import type { ReviewSpec, SortResultPayload } from "./src/types";
 
 // ---------------------------------------------------------------------------
 // Plugin Settings
 // ---------------------------------------------------------------------------
+
+type ReviewContainer = "sidebar" | "modal";
 
 interface PluginSettings {
   apiKey: string;
@@ -38,6 +39,7 @@ interface PluginSettings {
   inboxFolder: string;
   ignorePatterns: string;
   manifestFilename: string;
+  reviewContainer: ReviewContainer;
 }
 
 const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -48,7 +50,11 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   inboxFolder: "",
   ignorePatterns: "",
   manifestFilename: "_manifest.md",
+  reviewContainer: "sidebar",
 };
+
+// Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
+let reviewSeq = 0;
 
 // ---------------------------------------------------------------------------
 // Setting Tab
@@ -67,6 +73,20 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     containerEl.createEl("h2", { text: "Vault Maintenance — Settings" });
+
+    new Setting(containerEl)
+      .setName("Review container")
+      .setDesc("Where clean/sort reviews and chat open: a docked sidebar pane or a centered modal overlay.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("sidebar", "Sidebar pane")
+          .addOption("modal", "Modal overlay")
+          .setValue(this.plugin.pluginSettings.reviewContainer)
+          .onChange(async (value) => {
+            this.plugin.pluginSettings.reviewContainer = value as ReviewContainer;
+            await this.plugin.saveSettings();
+          })
+      );
 
     new Setting(containerEl)
       .setName("API Key")
@@ -211,6 +231,10 @@ export default class VaultMaintenancePlugin extends Plugin {
       },
     });
 
+    // Register the sidebar review view so Obsidian can instantiate
+    // vault-ease-of-maintenance review leaves.
+    this.registerView(REVIEW_VIEW_TYPE, (leaf) => new ReviewView(leaf));
+
     this.addSettingTab(new VaultMaintenanceSettingTab(this.app, this));
 
     // Commands
@@ -250,6 +274,18 @@ export default class VaultMaintenancePlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.pluginSettings);
+  }
+
+  // ------------------------------------------------------------------
+  // Review dispatch — one setting, two interchangeable containers
+  // ------------------------------------------------------------------
+
+  private openReview(spec: ReviewSpec): void {
+    if (this.pluginSettings.reviewContainer === "sidebar") {
+      void openReviewInSidebar(this.app, spec);
+    } else {
+      openReviewInModal(this.app, spec);
+    }
   }
 
   // ------------------------------------------------------------------
@@ -301,29 +337,40 @@ export default class VaultMaintenancePlugin extends Plugin {
         return;
       }
 
-      // Show diff modal for review
-      new DiffReviewModal(this.app, proposal, async (accepted) => {
-        if (accepted) {
-          // Write the cleaned content
-          const absPath = `${settings.vaultPath}/${filePath}`;
-          const fs = require("fs");
-          const crypto = require("crypto");
-          const original = fs.readFileSync(absPath, "utf-8");
-
-          // Backup
-          const bakPath = absPath + ".bak";
-          let suffix = 0;
-          while (fs.existsSync(bakPath + (suffix ? `.${suffix}` : ""))) suffix++;
-          fs.copyFileSync(absPath, bakPath + (suffix ? `.${suffix}` : ""));
-
-          // Write cleaned
-          const tmpPath = absPath + `.tmp-${crypto.randomBytes(4).toString("hex")}`;
-          fs.writeFileSync(tmpPath, proposal.cleaned, "utf-8");
-          fs.renameSync(tmpPath, absPath);
-
-          new Notice(`Cleaned — backup saved.`);
-        }
-      }).open();
+      const spec: ReviewSpec = {
+        kind: "clean",
+        id: `clean-${++reviewSeq}`,
+        proposal: {
+          filePath,
+          vaultPath,
+          original: proposal.original,
+          cleaned: proposal.cleaned,
+          validation: {
+            passed: Object.values(proposal.validation).every(v => v[0]),
+            checks: Object.fromEntries(
+              Object.entries(proposal.validation).map(([k, v]) => [k, v[1]])
+            ),
+          },
+          opsApplied: proposal.opsApplied,
+          opsRejected: proposal.opsRejected,
+        },
+        onResolve: async (action) => {
+          if (action === "reject") {
+            return { ok: true, message: "Rejected — file not modified." };
+          }
+          try {
+            acceptProposal(filePath, proposal);
+            const { basename } = require("path");
+            return {
+              ok: true,
+              message: `Accepted — ${basename(filePath)} written (backup at ${filePath}.bak).`,
+            };
+          } catch (e: any) {
+            return { ok: false, message: `Write failed: ${e.message}` };
+          }
+        },
+      };
+      this.openReview(spec);
     } catch (e: any) {
       notice.hide();
       new Notice(`Clean failed: ${e.message}`);
@@ -344,182 +391,65 @@ export default class VaultMaintenancePlugin extends Plugin {
       }
 
       const sortResult = result as SortResult;
-      new ReviewPanelModal(this.app, sortResult).open();
+      const payload: SortResultPayload = {
+        decisions: sortResult.decisions.map(d => ({
+          unit_id: d.unitId,
+          source_handle: d.sourceHandle,
+          source_path: d.sourcePath,
+          source_content: d.sourceContent,
+          action: d.action,
+          score: d.score,
+          reason: d.reason,
+          dest_path: d.destPath,
+          dest_heading: d.destHeading,
+          dest_context_before: d.destContextBefore,
+          dest_context_after: d.destContextAfter,
+        })),
+        manifest_constitution: sortResult.manifestConstitution,
+        suggestions: sortResult.suggestions,
+        elapsed: sortResult.elapsed,
+      };
+
+      const spec: ReviewSpec = {
+        kind: "sort",
+        id: `sort-${++reviewSeq}`,
+        result: payload,
+      };
+      this.openReview(spec);
     } catch (e: any) {
       notice.hide();
       new Notice(`Sort failed: ${e.message}`);
     }
   }
 
-  async handleChat(): Promise<void> {
-    new ChatModal(this.app).open();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// UI Components — Obsidian native modals
-// ---------------------------------------------------------------------------
-
-class DiffReviewModal extends Modal {
-  private proposal: ProposedChange;
-  private onResolve: (accepted: boolean) => void;
-
-  constructor(app: App, proposal: ProposedChange, onResolve: (accepted: boolean) => void) {
-    super(app);
-    this.proposal = proposal;
-    this.onResolve = onResolve;
-  }
-
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.empty();
-
-    contentEl.createEl("h2", { text: `Cleanup Review — ${this.proposal.filePath}` });
-
-    // Validation status
-    const allPassed = Object.values(this.proposal.validation).every(v => v[0]);
-    const statusEl = contentEl.createEl("div", {
-      cls: allPassed ? "clean-review-pass" : "clean-review-fail",
-    });
-    statusEl.setText(allPassed ? "✅ All validators passed" : "⚠️ Validation warnings");
-
-    if (!allPassed) {
-      const list = statusEl.createEl("ul");
-      for (const [k, v] of Object.entries(this.proposal.validation)) {
-        if (!v[0]) list.createEl("li", { text: `${k}: ${v[1]}` });
-      }
-    }
-
-    // Side-by-side diff
-    const diffContainer = contentEl.createEl("div", { cls: "diff-container" });
-    diffContainer.style.display = "flex";
-    diffContainer.style.gap = "12px";
-
-    const origPanel = diffContainer.createEl("div", { cls: "diff-panel" });
-    origPanel.createEl("h4", { text: "Original" });
-    const origPre = origPanel.createEl("pre", { text: this.proposal.original });
-    origPre.style.cssText = "max-height:60vh;overflow:auto;font-size:0.8rem;white-space:pre-wrap;background:#fff3f3;padding:8px;border-radius:4px;flex:1";
-
-    const cleanPanel = diffContainer.createEl("div", { cls: "diff-panel" });
-    cleanPanel.createEl("h4", { text: "Cleaned" });
-    const cleanPre = cleanPanel.createEl("pre", { text: this.proposal.cleaned });
-    cleanPre.style.cssText = "max-height:60vh;overflow:auto;font-size:0.8rem;white-space:pre-wrap;background:#f3fff3;padding:8px;border-radius:4px;flex:1";
-
-    // Actions
-    const actions = contentEl.createEl("div", { cls: "diff-actions" });
-    actions.style.cssText = "display:flex;gap:12px;margin-top:16px";
-
-    const acceptBtn = actions.createEl("button", { text: "Accept — write file", cls: "mod-cta" });
-    acceptBtn.addEventListener("click", () => {
-      this.close();
-      this.onResolve(true);
-    });
-
-    const rejectBtn = actions.createEl("button", { text: "Reject — keep original" });
-    rejectBtn.addEventListener("click", () => {
-      this.close();
-      this.onResolve(false);
-    });
-  }
-
-  onClose(): void {
-    (this as any).contentEl.empty();
-  }
-}
-
-class ReviewPanelModal extends Modal {
-  private result: SortResult;
-
-  constructor(app: App, result: SortResult) {
-    super(app);
-    this.result = result;
-  }
-
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.empty();
-
-    contentEl.createEl("h2", { text: "Sort Review" });
-    contentEl.createEl("p", {
-      text: `${this.result.placed.length} placed, ${this.result.flagged.length} flagged in ${this.result.elapsed.toFixed(0)}s`,
-    });
-
-    for (const d of this.result.decisions) {
-      const card = contentEl.createEl("div", { cls: "sort-card" });
-      card.style.cssText = "background:#fff;border:1px solid #dee2e6;border-radius:6px;padding:10px;margin-bottom:8px";
-
-      const badge = card.createEl("span", {
-        text: d.action === "placed" ? "✓ PLACED" : d.action === "near_duplicate" ? "⚠️ NEAR-DUP" : "❓ FLAGGED",
-      });
-      badge.style.cssText = `font-weight:600;margin-right:8px;color:${d.action === "placed" ? "#28a745" : d.action === "near_duplicate" ? "#dc3545" : "#856404"}`;
-
-      card.createEl("span", { text: `${d.sourcePath} → ${d.destPath || "(none)"}` });
-
-      if (d.reason) card.createEl("p", { text: d.reason, cls: "sort-reason" });
-    }
-
-    if (this.result.suggestions) {
-      const sug = contentEl.createEl("div", { cls: "sort-suggestions" });
-      sug.style.cssText = "background:#f0f7ff;border:1px solid #b8d4f0;border-radius:6px;padding:12px;margin-top:16px";
-      sug.createEl("h4", { text: "Suggestions" });
-      sug.createEl("p", { text: this.result.suggestions });
-    }
-  }
-
-  onClose(): void {
-    (this as any).contentEl.empty();
-  }
-}
-
-class ChatModal extends Modal {
-  constructor(app: App) {
-    super(app);
-  }
-
-  onOpen(): void {
-    const { contentEl } = this;
-    contentEl.empty();
-
-    contentEl.createEl("h2", { text: "Chat with Your Vault" });
-
-    const inputRow = contentEl.createEl("div");
-    inputRow.style.cssText = "display:flex;gap:8px;margin-bottom:12px";
-
-    const input = inputRow.createEl("input", { type: "text", placeholder: "Ask a question..." });
-    input.style.cssText = "flex:1;padding:8px;border:1px solid #ccc;border-radius:4px";
-
-    const resultsEl = contentEl.createEl("div");
-
-    const search = async () => {
-      const q = input.value.trim();
-      if (!q) return;
-
-      resultsEl.empty();
-      resultsEl.createEl("p", { text: "Searching..." });
-
-      try {
-        const answer = await runChat(q);
-        resultsEl.empty();
-
-        const answerEl = resultsEl.createEl("div");
-        answerEl.style.cssText = "background:#f0f7ff;border:1px solid #b8d4f0;border-radius:6px;padding:12px;margin-top:8px";
-        answerEl.createEl("h4", { text: "Answer" });
-        answerEl.createEl("div", { text: answer });
-      } catch (e: any) {
-        resultsEl.empty();
-        resultsEl.createEl("p", { text: `Error: ${e.message}`, cls: "mod-warning" });
-      }
+  handleChat(): void {
+    const spec: ReviewSpec = {
+      kind: "chat",
+      query: runChatQuery,
     };
-
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") search();
-    });
-
-    const btn = inputRow.createEl("button", { text: "Search", cls: "mod-cta" });
-    btn.addEventListener("click", search);
+    this.openReview(spec);
   }
+}
 
-  onClose(): void {
-    (this as any).contentEl.empty();
-  }
+// ---------------------------------------------------------------------------
+// Accept — backup + write (called by the clean review's onResolve)
+// ---------------------------------------------------------------------------
+
+function acceptProposal(filePath: string, proposal: ProposedChange): void {
+  const fs = require("fs");
+  const crypto = require("crypto");
+  const path = require("path");
+
+  const absPath = path.join(settings.vaultPath, filePath);
+
+  // Backup the current on-disk file
+  const bakPath = absPath + ".bak";
+  let suffix = 0;
+  while (fs.existsSync(bakPath + (suffix ? `.${suffix}` : ""))) suffix++;
+  fs.copyFileSync(absPath, bakPath + (suffix ? `.${suffix}` : ""));
+
+  // Atomic write of the cleaned content
+  const tmpPath = absPath + `.tmp-${crypto.randomBytes(4).toString("hex")}`;
+  fs.writeFileSync(tmpPath, proposal.cleaned, "utf-8");
+  fs.renameSync(tmpPath, absPath);
 }

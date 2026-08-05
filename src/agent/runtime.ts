@@ -8,6 +8,7 @@ import * as os from "os";
 import { settings, INDEX_DB_SUFFIX } from "../config";
 import { LLMClient, Tool } from "./llm";
 import * as toolImpl from "./tools";
+import cleanupSkillMd from "../../maintainer-definitions/phase-1-note-cleanup.md";
 import {
   ELIGIBLE,
   NEAR_DUP,
@@ -25,6 +26,7 @@ import { Embedder } from "../indexer/embedder";
 import { Indexer } from "../indexer/indexer";
 import { DatabaseManager } from "../indexer/db";
 import { ManifestEntry, ManifestParser, TocReader, CommunitySeed } from "../indexer/manifest";
+import type { ChatQueryResult, ChatQueryResponse } from "../types";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,12 +52,10 @@ export const CHAT_SYSTEM_PROMPT =
 // ---------------------------------------------------------------------------
 
 function loadSkill(skillName: string): string {
-  // Skills are bundled at build time; fallback to inline
-  const skillsDir = path.resolve(__dirname, "..", "..", "maintainer-definitions");
-  const skillPath = path.join(skillsDir, skillName);
-  if (fs.existsSync(skillPath)) {
-    return fs.readFileSync(skillPath, "utf-8");
-  }
+  // Skills are bundled at build time via esbuild's text loader (.md → text).
+  // Runtime disk reads are unreliable inside Obsidian (no __dirname), so the
+  // skill content ships inside main.js — no pathing to go wrong.
+  if (skillName === CLEANUP_SKILL_FILENAME) return cleanupSkillMd;
   return `# ${skillName}\n\n(Skill file not found)`;
 }
 
@@ -521,6 +521,49 @@ export async function runChat(question: string): Promise<string> {
     null,
   );
   return answer;
+}
+
+// Full chat query payload — search results + LLM synthesis. Mirrors the
+// server's /chat/query response so the native review UI gets both.
+export async function runChatQuery(
+  question: string,
+  topK: number = 5,
+): Promise<ChatQueryResponse> {
+  const embedder = new Embedder(settings);
+  const q = await embedder.embed(question);
+  const db = new DatabaseManager(settings.dbPath);
+  const raw = db.searchSimilar(q, topK);
+
+  const results: ChatQueryResult[] = raw.map(r => ({
+    node_key: r.nodeKey,
+    file_path: r.filePath,
+    heading_path: r.headingPath,
+    score: r.score,
+    text: r.text,
+    line_start: r.lineStart,
+    line_end: r.lineEnd,
+  }));
+
+  let answer: string;
+  if (results.length === 0) {
+    answer = "No relevant information found in your vault.";
+  } else {
+    const ctx = results
+      .map(r => `From ${r.file_path} (${r.heading_path}, lines ${r.line_start}-${r.line_end}):\n${r.text}`)
+      .join("\n\n");
+    try {
+      const [a] = await new LLMClient().chat(
+        CHAT_SYSTEM_PROMPT,
+        `Context:\n${ctx}\n\nQuestion: ${question}`,
+        null,
+      );
+      answer = a;
+    } catch {
+      answer = "[Synthesis unavailable — LLM error]";
+    }
+  }
+
+  return { answer, results };
 }
 
 // ---------------------------------------------------------------------------
