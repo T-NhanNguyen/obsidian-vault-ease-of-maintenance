@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "minAppVersion": "1.5.0",
   "description": "AI-powered vault maintenance: GraphRAG indexer, cleanup agent, inbox triage, and RAG chat. Runs entirely inside Obsidian.",
-  "author": "Note Maintainer",
-  "authorUrl": "",
+  "author": "T-NhanNguyen",
+  "authorUrl": "https://github.com/T-NhanNguyen",
   "isDesktopOnly": true
 }

@@ -1,10 +1,44 @@
 // SQLite database manager for v2 GraphRAG schema.
 // Ported from src/indexer/db.py
 // Uses better-sqlite3 — native C binding, same speed as Python's sqlite3.
+// The module is REQUIRED LAZILY (first connect) so a native-module load
+// issue can never block plugin startup — the DB is only used on demand.
 
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
+import { settings } from "../config";
+
+// Obsidian's plugin loader does not resolve bare specifiers from the plugin's
+// node_modules (error: "Cannot find module 'better-sqlite3'" with require stack
+// electron/js2c/renderer_init). Resolve by absolute path derived from the vault;
+// bare require stays first so tests/dev under plain Node keep working.
+const PLUGIN_ID = "obsidian-vault-ease-of-maintenance";
+
+function resolveBetterSqlite3(): typeof Database {
+  try {
+    return require("better-sqlite3");
+  } catch (bareErr) {
+    const candidates: string[] = [];
+    const vault = settings.vaultPath;
+    if (vault) {
+      candidates.push(
+        path.join(vault, ".obsidian", "plugins", PLUGIN_ID, "node_modules", "better-sqlite3")
+      );
+    }
+    if (typeof __dirname === "string" && __dirname) {
+      candidates.push(path.join(__dirname, "node_modules", "better-sqlite3"));
+    }
+    for (const c of candidates) {
+      try {
+        return require(c);
+      } catch (e) {
+        console.error(`[db] better-sqlite3 candidate failed: ${c} -> ${(e as Error).message}`);
+      }
+    }
+    throw bareErr instanceof Error ? bareErr : new Error(String(bareErr));
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -107,7 +141,10 @@ export class DatabaseManager {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    this.db = new Database(this.dbPath);
+    // Lazy require: keeps better-sqlite3 out of the plugin's load-time
+    // require chain (see file header comment).
+    const DatabaseCtor = resolveBetterSqlite3();
+    this.db = new DatabaseCtor(this.dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     return this.db;

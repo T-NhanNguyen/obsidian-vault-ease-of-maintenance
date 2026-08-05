@@ -9,16 +9,15 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "dependencies": {
+    "better-sqlite3": "^13.0.2"
+  },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.0.0",
-    "better-sqlite3": "^11.0.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.1",
     "obsidian": "^1.5.0",
     "typescript": "^5.0.0",
-    "vitest": "^2.0.0"
-  },
-  "dependencies": {
-    "@dqbd/tiktoken": "^1.0.0"
+    "vitest": "^3.2.7"
   }
 }
