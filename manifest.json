@@ -1,10 +1,10 @@
 {
-  "id": "obsidian-vault-ease-of-maintenance",
-  "name": "Vault Ease of Maintenance",
-  "version": "1.0.0",
-  "minAppVersion": "1.5.0",
-  "description": "AI-powered vault maintenance: GraphRAG indexer, cleanup agent, inbox triage, and RAG chat. Runs entirely inside Obsidian.",
+  "description": "A vault management tool with integrated agentic capabilities that is Self contained inside Obsidian.",
+  "id": "ease-of-maintenance",
+  "isDesktopOnly": true,
   "author": "T-NhanNguyen",
-  "authorUrl": "https://github.com/T-NhanNguyen",
-  "isDesktopOnly": true
+  "minAppVersion": "1.5.0",
+  "name": "Ease of Maintenance",
+  "version": "1.0.0",
+  "authorUrl": ""
 }
