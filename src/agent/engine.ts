@@ -655,19 +655,19 @@ export interface OperationContext {
 export type ChunkMeta = Record<string, any>;
 
 export class EligibilityFilter {
-  static excludeSelf(chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
+  static excludeSelf(this: void, chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
     const chunkHandle = chunk.handle || "";
     if (chunkHandle === unitSourceHandle) return EXCLUDED;
     return ELIGIBLE;
   }
 
-  static excludeSourceSet(chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
+  static excludeSourceSet(this: void, chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
     const chunkHandle = chunk.handle || "";
     if (ctx.sourceSet.has(chunkHandle)) return EXCLUDED;
     return ELIGIBLE;
   }
 
-  static requireScope(chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
+  static requireScope(this: void, chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
     if (!ctx.registry) return ELIGIBLE;
     const chunkHandle = chunk.handle || "";
     try {
@@ -679,7 +679,7 @@ export class EligibilityFilter {
     }
   }
 
-  static requireFresh(chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
+  static requireFresh(this: void, chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
     if (!ctx.registry) return ELIGIBLE;
     const chunkHandle = chunk.handle || "";
     try {
@@ -694,13 +694,13 @@ export class EligibilityFilter {
     return ELIGIBLE;
   }
 
-  static nearDuplicateCheck(chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
+  static nearDuplicateCheck(this: void, chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
     const score = chunk.score || 0.0;
     if (score >= NEAR_DUP_TAU) return NEAR_DUP;
     return ELIGIBLE;
   }
 
-  static run(chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
+  static run(this: void, chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
     for (const filterFn of [
       EligibilityFilter.nearDuplicateCheck,
       EligibilityFilter.excludeSelf,

@@ -57,7 +57,7 @@ export class ReviewView extends ItemView {
     }
 
     getIcon(): string {
-        return ""; // text-only header: the pane is identified by its name
+        return "wrench"; // sidebar tab icon, matching the built-in right-sidebar tabs
     }
 
     getState(): ReviewViewState {
@@ -182,11 +182,12 @@ export class ReviewView extends ItemView {
     // ------------------------------------------------------------------
 
     private makeHost(): ReviewHost {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias -- the contentEl getter closes over the view; `this` inside a getter would be the host object
         const view = this;
         return {
             // Renderers target the ACTIVE tab panel, not the view container.
             get contentEl(): HTMLElement {
-                return view.activePanel ?? view.panelsEl ?? document.createElement("div");
+                return view.activePanel ?? view.panelsEl ?? createDiv();
             },
             app: view.app,
             component: view,
@@ -201,9 +202,11 @@ export class ReviewView extends ItemView {
 
 export async function openReviewInSidebar(app: App, spec: ReviewSpec): Promise<void> {
     const existing = app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE)[0];
-    // Reuse an existing review pane; otherwise create a dedicated right-sidebar
-    // leaf instead of hijacking whatever the user already has open there.
-    const leaf = existing ?? app.workspace.getRightLeaf(true);
+    // Reuse an existing review pane; otherwise open WITHOUT splitting
+    // (getRightLeaf(false)) so the pane becomes a TAB in the same right-sidebar
+    // stack as Backlinks / Outline / Tags, instead of a stacked pane in the
+    // bottom half of the expanded sidebar.
+    const leaf = existing ?? app.workspace.getRightLeaf(false);
     if (!leaf) {
         new Notice("Could not open a review pane.");
         return;

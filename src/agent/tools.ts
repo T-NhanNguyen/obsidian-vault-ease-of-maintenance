@@ -3,7 +3,6 @@
 
 import * as crypto from "crypto";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { settings } from "../config";
 import {
@@ -15,7 +14,6 @@ import {
 } from "./engine";
 import { Embedder } from "../indexer/embedder";
 import { DatabaseManager } from "../indexer/db";
-import { INDEX_DB_SUFFIX } from "../config";
 
 // ---------------------------------------------------------------------------
 // Global registry
@@ -520,3 +518,63 @@ export const APPLY_EDITS_TOOL = {
     required: ["handle", "ops"],
   },
 };
+
+// ---------------------------------------------------------------------------
+// Cite-source tool — deterministic citation numbering for the chat agent.
+// The agent calls cite_source(source_id) and the tool assigns a stable
+// [N] marker: increments on the first citation of each source, returns the
+// same number on subsequent citations of the same source.  This keeps the
+// answer text free of self-managed numbering.
+// ---------------------------------------------------------------------------
+
+export const CITE_SOURCE_TOOL = {
+  name: "cite_source",
+  description:
+    "Cite a source by its number from the Context. " +
+    "Call this after every claim that uses a source — the tool returns a citation marker like [1]. " +
+    "Insert the returned marker directly into your answer text after the claim. " +
+    "The same source always gets the same marker number.",
+  parameters: {
+    type: "object",
+    properties: {
+      source_id: {
+        type: "integer",
+        description:
+          "The source number from the Context (e.g., 1 for [1], 2 for [2]). " +
+          "Must be a numbered source that exists in the Context.",
+      },
+    },
+    required: ["source_id"],
+  },
+};
+
+let citationCounter = 0;
+const citationIndexMap = new Map<number, number>();
+
+export function resetCitationTracker(): void {
+  citationCounter = 0;
+  citationIndexMap.clear();
+}
+
+export function citeSource(args: { source_id: number }): string {
+  const sourceId = Number(args.source_id);
+  if (!Number.isFinite(sourceId) || sourceId < 1) {
+    return "Error: source_id must be a positive integer";
+  }
+  const sourceIndex = sourceId - 1;
+  let citationNumber = citationIndexMap.get(sourceIndex);
+  if (citationNumber === undefined) {
+    citationNumber = ++citationCounter;
+    citationIndexMap.set(sourceIndex, citationNumber);
+  }
+  return `[${citationNumber}]`;
+}
+
+/** Returns a snapshot: citation-number → source-index (0‑based into results). */
+export function getCitationMap(): Record<number, number> {
+  const result: Record<number, number> = {};
+  for (const [srcIdx, citNum] of citationIndexMap) {
+    result[citNum] = srcIdx;
+  }
+  return result;
+}

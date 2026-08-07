@@ -2,7 +2,7 @@
 // Ported from src/agent/llm.py
 
 import { settings, resolveApiKey } from "../config";
-import { getLlmClient, detectProvider, ChatResponse, type ILlmClient } from "./llm_client";
+import { getLlmClient, detectProvider, type ILlmClient } from "./llm_client";
 
 // ---------------------------------------------------------------------------
 // Tool definition
@@ -79,24 +79,18 @@ export class LLMClient {
     ];
 
     for (let turn = 0; turn < maxTurns; turn++) {
-      const t0 = Date.now();
-      console.log(`  [chat] Turn ${turn + 1}/${maxTurns}: sending ${messages.length} messages...`);
-
       const openaiTools = tools ? tools.map(t => t.toOpenAiTool()) : null;
       const response = await this.llm.chatCompletion(this.model, messages, openaiTools);
-
-      const elapsed = (Date.now() - t0) / 1000;
-      console.log(`  [chat] Turn ${turn + 1} done (${elapsed.toFixed(1)}s) | finish=${response.finishReason}`);
 
       const toolCalls = response.toolCalls;
 
       if (toolCalls && toolCalls.length > 0) {
-        console.log(`  [chat] Got ${toolCalls.length} tool call(s)`);
-
-        // Add assistant message with tool calls
+        // Add assistant message with tool calls (keep any partial text — the
+        // model may emit content alongside tool_calls, and the client needs
+        // both for answer reconstruction).
         messages.push({
           role: "assistant",
-          content: null,
+          content: response.content || null,
           tool_calls: toolCalls.map(tc => ({
             id: tc.id,
             type: "function",
@@ -117,12 +111,8 @@ export class LLMClient {
             fnArgs = {};
           }
 
-          console.log(`  [chat] Executing tool: ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)})`);
-          const t1 = Date.now();
           const matched = (tools || []).filter(t => t.name === fnName);
           const result = matched.length > 0 ? matched[0].call(fnArgs) : `Unknown tool: ${fnName}`;
-          const toolElapsed = (Date.now() - t1) / 1000;
-          console.log(`  [chat] Tool result (${toolElapsed.toFixed(2)}s): ${result.length} chars`);
 
           messages.push({
             role: "tool",
@@ -131,14 +121,12 @@ export class LLMClient {
           });
         }
       } else if (response.content) {
-        console.log(`  [chat] Got text response: ${response.content.length} chars`);
         messages.push({
           role: "assistant",
           content: response.content,
         });
         return [response.content, messages];
       } else {
-        console.log(`  [chat] Empty response, no tool calls — returning empty`);
         return ["", messages];
       }
     }

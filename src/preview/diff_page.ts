@@ -2,8 +2,6 @@
 // Ported from src/preview/diff_page.py
 // For Path C (all-in-plugin), this produces HTML strings usable in Obsidian views.
 
-import { PendingEntry } from "./pending";
-
 export function renderValidationBanner(validation: Record<string, any>): string {
   const passed = validation.passed !== false;
   const checks = validation.checks || {};
@@ -58,8 +56,6 @@ export function renderDiffPageFromProposal(
 ): string {
   const banner = renderValidationBanner(validation);
   const diff = renderDiffHtml(original, cleaned);
-  const origEscaped = escapeHtml(original);
-  const cleanedEscaped = escapeHtml(cleaned);
 
   return `<!doctype html>
 <html>

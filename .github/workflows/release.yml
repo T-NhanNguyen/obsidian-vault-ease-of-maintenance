@@ -1,0 +1,47 @@
+# Builds the plugin and attaches release assets when a version tag is pushed.
+#
+# Tag format: the plain version (e.g. "1.0.0"), matching manifest.json.
+# After each release, add the minAppVersion for that version to versions.json
+# (the community store reads it to gate installs).
+#
+# main.js / manifest.json / styles.css must exist as release assets — the
+# automated plugin review fails if they are missing or committed-only.
+
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          gh release create "$VERSION" \
+            --generate-notes \
+            "main.js" \
+            "manifest.json" \
+            "styles.css"

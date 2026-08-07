@@ -1,6 +1,8 @@
 // LLM client abstraction layer.
 // Provider-agnostic, fetch-based. Ported from src/agent/llm_client.py
 
+import { postJson } from "../http";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -159,37 +161,29 @@ async function postWithRetry(
   clientLabel: string,
   opts: { handle503?: boolean; handle429?: boolean } = {},
 ): Promise<ChatResponse> {
-  const timeoutSignal = AbortSignal.timeout(DEFAULT_TIMEOUT);
-
   for (let attempt = 0; attempt < DEFAULT_MAX_RETRIES; attempt++) {
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: timeoutSignal,
-      });
+      const result = await postJson(endpoint, headers, payload, DEFAULT_TIMEOUT);
 
-      if (opts.handle503 && response.status === 503) {
+      if (opts.handle503 && result.status === 503) {
         const wait = Math.pow(DEFAULT_BACKOFF_BASE, attempt) * 5;
         console.warn(`${clientLabel}: server loading (503). Retrying in ${wait}s (attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES})`);
         await sleep(wait * 1000);
         continue;
       }
 
-      if (opts.handle429 && response.status === 429) {
+      if (opts.handle429 && result.status === 429) {
         const wait = Math.min(Math.pow(DEFAULT_BACKOFF_BASE, attempt) * 5, 60);
         console.warn(`${clientLabel}: rate limited (429). Retrying in ${wait}s (attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES})`);
         await sleep(wait * 1000);
         continue;
       }
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      if (!result.ok) {
+        throw new Error(`HTTP ${result.status}`);
       }
 
-      const raw = await response.json();
-      return parseResponse(raw);
+      return parseResponse((result.body ?? {}) as Record<string, any>);
     } catch (e: any) {
       const delay = Math.pow(DEFAULT_BACKOFF_BASE, attempt) * 2;
       console.error(`${clientLabel}: error on attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES}: ${e.message}`);
@@ -202,7 +196,7 @@ async function postWithRetry(
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +204,9 @@ function sleep(ms: number): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function parseResponse(data: Record<string, any>): ChatResponse {
+  if (!data || typeof data !== "object" || !Array.isArray(data.choices) || !data.choices[0]) {
+    throw new Error("Malformed LLM response: missing choices");
+  }
   const choice = data.choices[0];
   const msg = choice.message;
   let content = msg.content || "";

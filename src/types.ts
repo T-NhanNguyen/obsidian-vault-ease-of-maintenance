@@ -83,4 +83,6 @@ export interface ChatQueryResult {
 export interface ChatQueryResponse {
     answer: string;
     results: ChatQueryResult[];
+    /** citation-number → 0‑based index into results (from the cite_source tool) */
+    citationMap?: Record<number, number>;
 }

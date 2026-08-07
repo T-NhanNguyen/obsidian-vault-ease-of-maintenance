@@ -63,8 +63,7 @@ function createStatBadge(parent: HTMLElement, cls: string, label: string): void 
 }
 
 function renderDecisionCard(decision: SortDecisionPayload): HTMLElement {
-    const card = document.createElement("div");
-    card.className = "nm-card";
+    const card = createDiv({ cls: "nm-card" });
 
     const header = card.createDiv({ cls: "nm-card-header" });
     header.createSpan({
@@ -100,17 +99,14 @@ function renderDecisionCard(decision: SortDecisionPayload): HTMLElement {
 }
 
 function renderPlacedPanels(decision: SortDecisionPayload): HTMLElement {
-    const panels = document.createElement("div");
-    panels.className = "nm-panels";
+    const panels = createDiv({ cls: "nm-panels" });
 
-    const sourcePanel = document.createElement("div");
-    sourcePanel.className = "nm-panel nm-panel-source";
+    const sourcePanel = createDiv({ cls: "nm-panel nm-panel-source" });
     sourcePanel.createDiv({ cls: "nm-panel-label nm-panel-label-source", text: "✕ inbox (removed)" });
     const sourceContent = sourcePanel.createDiv({ cls: "nm-panel-content nm-strikethrough" });
     sourceContent.setText(decision.source_content);
 
-    const destPanel = document.createElement("div");
-    destPanel.className = "nm-panel nm-panel-dest";
+    const destPanel = createDiv({ cls: "nm-panel nm-panel-dest" });
     if (decision.dest_path) {
         destPanel.createDiv({
             cls: "nm-panel-label nm-panel-label-dest",
@@ -136,8 +132,7 @@ function renderSinglePanel(
     label: string,
     labelCls: string
 ): HTMLElement {
-    const panel = document.createElement("div");
-    panel.className = "nm-panel";
+    const panel = createDiv({ cls: "nm-panel" });
     panel.createDiv({ cls: `nm-panel-label ${labelCls}`, text: label });
     panel.createDiv({ cls: "nm-panel-content nm-flagged-content", text: decision.source_content });
     return panel;

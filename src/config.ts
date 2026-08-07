@@ -39,6 +39,8 @@ export interface PreviewSettings {
 
 export interface Settings {
   vaultPath: string;
+  configDir: string;
+  pluginDir: string;
   dbPath: string;
   inboxFolder: string;
   ignorePatterns: string;
@@ -53,6 +55,8 @@ export interface Settings {
 export function defaultSettings(): Settings {
   return {
     vaultPath: "",
+    configDir: "",
+    pluginDir: "",
     dbPath: "",
     inboxFolder: "",
     ignorePatterns: "",

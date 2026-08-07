@@ -4,10 +4,11 @@
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 import { settings, INDEX_DB_SUFFIX } from "../config";
 import { LLMClient, Tool } from "./llm";
+import { buildChatContext, reconstructAnswer } from "./chat_context";
 import * as toolImpl from "./tools";
+import { CITE_SOURCE_TOOL, citeSource, resetCitationTracker, getCitationMap } from "./tools";
 import cleanupSkillMd from "../../maintainer-definitions/phase-1-note-cleanup.md";
 import {
   ELIGIBLE,
@@ -16,7 +17,6 @@ import {
   Journal,
   JournalEntry,
   OperationContext,
-  Snapshot,
   Validators,
   isIgnored,
   parseIgnorePatterns,
@@ -25,7 +25,7 @@ import {
 import { Embedder } from "../indexer/embedder";
 import { Indexer } from "../indexer/indexer";
 import { DatabaseManager } from "../indexer/db";
-import { ManifestEntry, ManifestParser, TocReader, CommunitySeed } from "../indexer/manifest";
+import { ManifestEntry, ManifestParser, TocReader } from "../indexer/manifest";
 import type { ChatQueryResult, ChatQueryResponse } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,6 @@ import type { ChatQueryResult, ChatQueryResponse } from "../types";
 // ---------------------------------------------------------------------------
 
 const CLEANUP_SKILL_FILENAME = "phase-1-note-cleanup.md";
-const TRIAGE_SKILL_FILENAME = "phase-2-inbox-triage.md";
 const SORT_BUDGET_TOTAL = 240;
 const FALLBACK_CONFIDENCE_FLOOR = 0.6;
 const REWRITE_CONTENT_THRESHOLD = 0.2;
@@ -41,10 +40,13 @@ const REWRITE_CONTENT_THRESHOLD = 0.2;
 export const CHAT_SYSTEM_PROMPT =
   "You are a research assistant for a personal notes vault. " +
   "Answer the question using ONLY the context provided. " +
-  "Write in short markdown: brief paragraphs, bullets for lists, " +
-  "and **bold** for key terms. " +
-  "Cite sources with numbered markers like [1] after each claim; " +
-  "never mention file names inline. " +
+  "Write in short markdown: brief paragraphs, bullets for lists, and **bold** for key terms. " +
+  "The Context lists numbered sources like [1], [2], [3] — their content follows below. " +
+  "After every claim that uses a source, call the cite_source tool with the source's number from the Context (e.g. cite_source(source_id=1)). " +
+  "The tool returns a marker like [1]; insert that marker into your answer after the claim. " +
+  "Call cite_source for EACH claim that draws from a source; use different source_id values for different sources. " +
+  "If a claim is not supported by any source, do not cite anything. " +
+  "Never mention file names inline. " +
   "If the context lacks the answer, say so plainly.";
 
 // ---------------------------------------------------------------------------
@@ -168,12 +170,9 @@ export async function runCleanup(
     ),
   ];
 
-  console.log(`  [clean] Sending ${original.length}-byte file to LLM with apply_edits tool...`);
-  const t0 = Date.now();
   const client = new LLMClient();
   toolImpl.resetPreviewResult();
   const [response, history] = await client.chat(system, user, tools, 3);
-  console.log(`  [clean] LLM returned in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
   // Receipt path
   const receipts = collectReceipts(history);
@@ -261,7 +260,6 @@ export async function runCleanup(
   const origWords = tokenizeWords(original).length;
   const cleanWords = tokenizeWords(cleaned).length;
   if (cleanWords < origWords * REWRITE_CONTENT_THRESHOLD) {
-    const snippet = cleaned.slice(0, 200).replace(/\n/g, " ");
     const msg = `Cleanup SKIPPED — model returned commentary instead of a cleaned file.`;
     if (preview) {
       return makeProposedChange(filePath, settings.vaultPath, original, original, {
@@ -547,23 +545,31 @@ export async function runChatQuery(
   let answer: string;
   if (results.length === 0) {
     answer = "No relevant information found in your vault.";
-  } else {
-    const ctx = results
-      .map(r => `From ${r.file_path} (${r.heading_path}, lines ${r.line_start}-${r.line_end}):\n${r.text}`)
-      .join("\n\n");
-    try {
-      const [a] = await new LLMClient().chat(
-        CHAT_SYSTEM_PROMPT,
-        `Context:\n${ctx}\n\nQuestion: ${question}`,
-        null,
-      );
-      answer = a;
-    } catch {
-      answer = "[Synthesis unavailable — LLM error]";
-    }
+    return { answer, results };
   }
 
-  return { answer, results };
+  const ctx = buildChatContext(results);
+  resetCitationTracker();
+  const citeTool = new Tool(
+    CITE_SOURCE_TOOL.name,
+    CITE_SOURCE_TOOL.description,
+    CITE_SOURCE_TOOL.parameters,
+    citeSource,
+  );
+
+  try {
+    const [, history] = await new LLMClient().chat(
+      CHAT_SYSTEM_PROMPT,
+      `Context:\n${ctx}\n\nQuestion: ${question}`,
+      [citeTool],
+      10,
+    );
+    answer = reconstructAnswer(history);
+  } catch {
+    answer = "[Synthesis unavailable — LLM error]";
+  }
+
+  return { answer, results, citationMap: getCitationMap() };
 }
 
 // ---------------------------------------------------------------------------
@@ -575,15 +581,12 @@ export async function runBuild(vaultPath: string): Promise<string> {
   settings.dbPath = path.join(vaultPath, INDEX_DB_SUFFIX);
   toolImpl.resetRegistry();
 
-  console.log(`  [build] Building index for vault: ${vaultPath}`);
-  console.log(`  [build] Database path: ${settings.dbPath}`);
   const t0 = Date.now();
-
   const manifestPath = new TocReader(vaultPath).findManifest();
   let manifestGenerated = false;
 
   if (!manifestPath) {
-    console.log("  [build] WARNING: No _manifest.md found — building non-manifest index first, then deriving one.");
+    console.warn("  [build] No _manifest.md found — building non-manifest index first, then deriving one.");
   }
 
   const indexer = new Indexer(settings);
@@ -592,18 +595,16 @@ export async function runBuild(vaultPath: string): Promise<string> {
 
   if (!manifestPath) {
     try {
-      const generated = await generateManifest(vaultPath);
+      await generateManifest(vaultPath);
       manifestGenerated = true;
-      console.log(`  [build] Manifest generated: ${generated}`);
       const indexer2 = new Indexer(settings);
       await indexer2.build();
     } catch (e: any) {
-      console.log(`  [build] Manifest generation failed (${e.message}) — index remains degraded.`);
+      console.warn(`  [build] Manifest generation failed (${e.message}) — index remains degraded.`);
     }
   }
 
   const elapsed = (Date.now() - t0) / 1000;
-  console.log(`  [build] Complete: ${files} files indexed in ${elapsed.toFixed(0)}s at ${settings.dbPath}`);
 
   let msg = `Index built: ${files} files indexed in ${elapsed.toFixed(0)}s at ${settings.dbPath}`;
   if (manifestGenerated) {
@@ -698,9 +699,8 @@ export async function generateManifest(vaultPath: string): Promise<string> {
       null, 1,
     );
     purposes = parseLlmPurposes(response, new Set(sortedFolders));
-    console.log(`  [manifest-gen] LLM derived ${Object.keys(purposes).length} folder purposes`);
   } catch (e: any) {
-    console.log(`  [manifest-gen] LLM synthesis failed (${e.message}) — using folder-name hints.`);
+    console.warn(`  [manifest-gen] LLM synthesis failed (${e.message}) — using folder-name hints.`);
   }
 
   // Render §5.1 manifest
@@ -880,7 +880,7 @@ function loadManifestConstitution(): string {
     }
     return lines.join("\n");
   } catch (e: any) {
-    console.log(`  [manifest] Error loading constitution: ${e.message}`);
+    console.warn(`  [manifest] Error loading constitution: ${e.message}`);
     return "";
   }
 }
@@ -927,7 +927,7 @@ function parseLlmPurposes(response: string, knownFolders: Set<string>): Record<s
   }
 
   for (const rawLine of response.trim().split("\n")) {
-    const line = rawLine.trim().replace(/^[*\-]\s*/, "");
+    const line = rawLine.trim().replace(/^[*-]\s*/, "");
     if (!line || !line.includes("—")) continue;
     const [token, ...rest] = line.split("—");
     const purpose = rest.join("—").trim();

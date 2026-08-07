@@ -1,9 +1,9 @@
 {
-  "description": "A vault management tool with integrated agentic capabilities that is Self contained inside Obsidian.",
+  "description": "A vault management tool with agentic capabilities that is self contained within the plugin. Currently it is a BYOK system or self hosted, but I'm working on providing another layer of convinience down the line",
   "id": "ease-of-maintenance",
   "isDesktopOnly": true,
   "author": "T-NhanNguyen",
-  "minAppVersion": "1.5.0",
+  "minAppVersion": "1.7.2",
   "name": "Ease of Maintenance",
   "version": "1.0.0",
   "authorUrl": ""

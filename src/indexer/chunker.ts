@@ -27,7 +27,7 @@ export class Chunker {
     const fileId: string = fileInfo.path || fileInfo.file_id || "";
 
     // Strip frontmatter
-    const [body, _frontmatter] = this.stripFrontmatter(content);
+    const [body] = this.stripFrontmatter(content);
 
     // Parse into heading-delimited sections
     const sections = this.splitByHeadings(fileId, body);

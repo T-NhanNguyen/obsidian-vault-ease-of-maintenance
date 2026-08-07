@@ -440,6 +440,23 @@
     font-size: 0.82em;
 }
 
+/* Citation chips in agent answers — clickable, jump to the matching source */
+.nm-citation-clickable {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 0 4px;
+    background: var(--background-modifier-hover);
+}
+
+.nm-citation-clickable:hover {
+    background: var(--background-modifier-active-hover);
+}
+
+.nm-citation-clickable:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 1px;
+}
+
 .nm-msg-loading {
     color: var(--text-muted);
 }
@@ -470,6 +487,29 @@
     padding: 4px 0;
 }
 
+/* Clickable source rows (chat) — keyboard-accessible link-like affordance */
+.nm-source-clickable {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 4px 6px;
+    margin: 0 -6px;
+}
+
+.nm-source-clickable:hover {
+    background: var(--background-modifier-hover);
+}
+
+.nm-source-clickable:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 1px;
+}
+
+.nm-source-clickable .nm-source-file {
+    color: var(--text-accent);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--text-accent) 40%, transparent);
+}
+
 .nm-source-meta {
     color: var(--text-muted);
 }
@@ -477,6 +517,34 @@
 .nm-source-file {
     font-weight: 600;
     color: var(--text-normal);
+}
+
+/* Numbered badge matching the [n] citation chips in the answer */
+.nm-source-index {
+    display: inline-block;
+    min-width: 18px;
+    text-align: center;
+    margin-right: 6px;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--background-modifier-hover);
+    color: var(--text-accent);
+    font-weight: 600;
+    font-size: 0.85em;
+}
+
+/* Flash highlight when a citation chip jumps to its source */
+.nm-source-flash {
+    animation: nm-source-flash 1.6s ease-out;
+}
+
+@keyframes nm-source-flash {
+    0% {
+        background: var(--background-modifier-hover);
+    }
+    100% {
+        background: transparent;
+    }
 }
 
 .nm-source-text {

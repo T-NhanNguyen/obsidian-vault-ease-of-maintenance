@@ -151,7 +151,6 @@ export class Indexer {
   async replayJournal(journalEntries: Array<Record<string, any>>): Promise<void> {
     this.db.initialize();
     const manifestPath = this.manifestParser.findManifest();
-    const seeds = this.manifestParser.getCommunitySeeds(manifestPath);
     const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
     const affectedFiles = new Set<string>();
 

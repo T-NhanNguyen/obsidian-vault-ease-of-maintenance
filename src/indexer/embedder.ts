@@ -2,12 +2,15 @@
 // Ported from src/indexer/embedder.py
 
 import { settings, resolveApiKey } from "../config";
+import { postJson } from "../http";
 
 // Interface for pluggable embedders (real API + deterministic test fake)
 export interface IEmbedder {
   embed(text: string): Promise<number[]>;
   embedBatch(texts: string[]): Promise<number[][]>;
 }
+
+const EMBED_REQUEST_TIMEOUT = 120_000; // ms
 
 export class Embedder implements IEmbedder {
   private model: string;
@@ -33,23 +36,24 @@ export class Embedder implements IEmbedder {
   }
 
   private async postEmbeddings(texts: string[]): Promise<number[][]> {
-    const response = await fetch(`${this.apiBase}/embeddings`, {
-      method: "POST",
-      headers: {
+    const result = await postJson(
+      `${this.apiBase}/embeddings`,
+      {
         "Authorization": `Bearer ${this.getApiKey()}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model: this.model, input: texts }),
-    });
+      { model: this.model, input: texts },
+      EMBED_REQUEST_TIMEOUT,
+    );
 
-    if (!response.ok) {
-      throw new Error(`Embeddings API error: ${response.status} ${response.statusText}`);
+    if (!result.ok) {
+      throw new Error(`Embeddings API error: ${result.status}`);
     }
 
-    const body = await response.json();
+    const body = (result.body ?? {}) as { data?: Array<{ index?: number; embedding: number[] }> };
     const raw = body.data || [];
-    raw.sort((a: any, b: any) => (a.index || 0) - (b.index || 0));
-    return raw.map((item: any) => item.embedding);
+    raw.sort((a, b) => (a.index || 0) - (b.index || 0));
+    return raw.map((item) => item.embedding);
   }
 
   async embed(text: string): Promise<number[]> {

@@ -2,8 +2,10 @@
 // function (Path C: no server POST). Container-agnostic: renders the
 // message list + input into any host.
 
+import { MarkdownView, Notice } from "obsidian";
 import type { ReviewHost } from "./review-host";
 import type { ChatQueryResponse, ChatQueryResult } from "./types";
+import type { App } from "obsidian";
 
 const CHAT_TITLE = "Chat";
 const INPUT_PLACEHOLDER = "Ask about your vault…";
@@ -63,7 +65,8 @@ async function runQuery(
         const data = await query(question);
         loading.remove();
         const answerEl = await appendMessage(messages, "assistant", data.answer || "", host);
-        renderSources(answerEl, data.results || []);
+        renderSources(answerEl, data.results || [], host, data.citationMap);
+        wireCitationNavigation(answerEl, data.citationMap);
     } catch (error) {
         loading.remove();
         const message = error instanceof Error ? error.message : String(error);
@@ -94,13 +97,38 @@ async function appendMessage(
     return bubble;
 }
 
-function renderSources(answerEl: HTMLElement, results: ChatQueryResult[]): void {
+function renderSources(
+    answerEl: HTMLElement,
+    results: ChatQueryResult[],
+    host: ReviewHost,
+    citationMap?: Record<number, number>
+): void {
     if (!results.length) return;
     const sources = answerEl.createDiv({ cls: "nm-sources" });
     sources.createEl("div", { cls: "nm-sources-title", text: "Sources" });
-    for (const result of results) {
-        const source = sources.createDiv({ cls: "nm-source" });
+    results.forEach((result, index) => {
+        const source = sources.createDiv({ cls: "nm-source nm-source-clickable" });
+        source.setAttr("role", "button");
+        source.setAttr("tabindex", "0");
+        source.setAttr("data-source-index", String(index));
+        const location = result.file_path + (result.heading_path ? ` — ${result.heading_path}` : "");
+        source.setAttr("aria-label", `Open ${location} in the main window`);
+        source.addEventListener("click", () => void openSourceInMainWindow(host.app, result));
+        source.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void openSourceInMainWindow(host.app, result);
+            }
+        });
+
         const meta = source.createDiv({ cls: "nm-source-meta" });
+        // Show the tool-assigned citation number when available, falling back
+        // to the 1‑based result index for consistency.
+        const citationNumber = citationMap
+            ? Object.entries(citationMap).find(([, srcIdx]) => srcIdx === index)?.[0]
+            : undefined;
+        const badgeText = citationNumber !== undefined ? String(citationNumber) : String(index + 1);
+        meta.createSpan({ cls: "nm-source-index", text: badgeText });
         meta.createSpan({ cls: "nm-source-file", text: result.file_path || "" });
         if (result.heading_path) {
             meta.createSpan({ cls: "nm-source-heading", text: ` — ${result.heading_path}` });
@@ -109,5 +137,48 @@ function renderSources(answerEl: HTMLElement, results: ChatQueryResult[]): void 
         if (result.text) {
             source.createDiv({ cls: "nm-source-text", text: result.text });
         }
+    });
+}
+
+function wireCitationNavigation(answerEl: HTMLElement, citationMap?: Record<number, number>): void {
+    const jumpToSource = (target: EventTarget | null): void => {
+        const chip = (target as HTMLElement | null)?.closest?.("[data-citation-index]") as HTMLElement | null;
+        if (!chip) return;
+        const citationNumber = Number(chip.getAttribute("data-citation-index"));
+        if (!Number.isFinite(citationNumber)) return;
+        // Translate the citation number to a 0‑based result-index via the
+        // tool's map; fall back to the citation number itself when no map
+        // is available (the tool wasn't used, e.g. old test data).
+        const resultIndex = citationMap?.[citationNumber] ?? citationNumber - 1;
+        const source = answerEl.querySelector(`[data-source-index="${resultIndex}"]`) as HTMLElement | null;
+        if (!source) return;
+        source.scrollIntoView({ behavior: "smooth", block: "center" });
+        source.addClass("nm-source-flash");
+        window.setTimeout(() => source.removeClass("nm-source-flash"), 1600);
+    };
+
+    answerEl.addEventListener("click", (event) => jumpToSource(event.target));
+    answerEl.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        if ((event.target as HTMLElement | null)?.closest?.("[data-citation-index]")) {
+            event.preventDefault();
+            jumpToSource(event.target);
+        }
+    });
+}
+
+async function openSourceInMainWindow(app: App, result: ChatQueryResult): Promise<void> {
+    try {
+        // openLinkText behaves like a link click: opens in the main window
+        // even when triggered from the right-sidebar chat pane.
+        await app.workspace.openLinkText(result.file_path, "", false);
+        // line_start is a 0-based body line index (chunker); editor lines are
+        // also 0-based, so jump straight to the section.
+        if (result.line_start !== undefined && result.line_start >= 0) {
+            app.workspace.getActiveViewOfType(MarkdownView)
+                ?.setEphemeralState({ line: result.line_start });
+        }
+    } catch {
+        new Notice(`Could not open ${result.file_path}`);
     }
 }

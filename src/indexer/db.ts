@@ -11,33 +11,57 @@ import { settings } from "../config";
 
 // Obsidian's plugin loader does not resolve bare specifiers from the plugin's
 // node_modules (error: "Cannot find module 'better-sqlite3'" with require stack
-// electron/js2c/renderer_init). Resolve by absolute path derived from the vault;
-// bare require stays first so tests/dev under plain Node keep working.
-const PLUGIN_ID = "obsidian-vault-ease-of-maintenance";
+// electron/js2c/renderer_init). Resolve by absolute path derived from the vault:
+// exact path when manifest.dir is populated, plus a scan of every plugin folder
+// under the config dir (covers any install folder name — local dev, BRAT,
+// community store). Bare require stays first so tests/dev under plain Node keep
+// working.
 
 function resolveBetterSqlite3(): typeof Database {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- bare require keeps plain-Node dev/tests working
     return require("better-sqlite3");
   } catch (bareErr) {
-    const candidates: string[] = [];
-    const vault = settings.vaultPath;
-    if (vault) {
-      candidates.push(
-        path.join(vault, ".obsidian", "plugins", PLUGIN_ID, "node_modules", "better-sqlite3")
-      );
-    }
-    if (typeof __dirname === "string" && __dirname) {
-      candidates.push(path.join(__dirname, "node_modules", "better-sqlite3"));
-    }
-    for (const c of candidates) {
+    for (const candidate of collectCandidatePaths()) {
       try {
-        return require(c);
+        // eslint-disable-next-line @typescript-eslint/no-var-requires -- absolute-path fallback for Obsidian's loader (see TROUBLESHOOTING-NOTES.md)
+        return require(candidate);
       } catch (e) {
-        console.error(`[db] better-sqlite3 candidate failed: ${c} -> ${(e as Error).message}`);
+        console.error(`[db] better-sqlite3 candidate failed: ${candidate} -> ${(e as Error).message}`);
       }
     }
+    console.error(
+      `[db] better-sqlite3 resolution failed (vaultPath="${settings.vaultPath}", configDir="${settings.configDir}", pluginDir="${settings.pluginDir}")`
+    );
     throw bareErr instanceof Error ? bareErr : new Error(String(bareErr));
   }
+}
+
+export function collectCandidatePaths(): string[] {
+  const candidates = new Set<string>();
+  const vault = settings.vaultPath;
+  // configDir is set at onload; the literal is only a safety net for direct
+  // DB use outside the plugin (e.g. scripts) where settings were never wired.
+  const configDir = settings.configDir || ".obsidian";
+  if (vault) {
+    if (settings.pluginDir) {
+      candidates.add(path.join(vault, configDir, settings.pluginDir, "node_modules", "better-sqlite3"));
+    }
+    // Scan every plugin folder under the config dir — works for any install
+    // folder name, so plugin id vs folder-name mismatches cannot break loading.
+    const pluginsRoot = path.join(vault, configDir, "plugins");
+    try {
+      for (const entry of fs.readdirSync(pluginsRoot)) {
+        candidates.add(path.join(pluginsRoot, entry, "node_modules", "better-sqlite3"));
+      }
+    } catch {
+      // plugins dir does not exist (no Obsidian install at this vault) — skip
+    }
+  }
+  if (typeof __dirname === "string" && __dirname) {
+    candidates.add(path.join(__dirname, "node_modules", "better-sqlite3"));
+  }
+  return [...candidates];
 }
 
 // ---------------------------------------------------------------------------

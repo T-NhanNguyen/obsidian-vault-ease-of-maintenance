@@ -6,8 +6,9 @@
 // two interchangeable containers — a docked right sidebar pane (default) or
 // a centered modal overlay — chosen in the plugin settings.
 
-import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { updateSettings, settings } from "./src/config";
+import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { updateSettings, settings, INDEX_DB_SUFFIX } from "./src/config";
+import { setHttpTransport } from "./src/http";
 import {
   runCleanup,
   runTriage,
@@ -72,7 +73,7 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Vault Maintenance — Settings" });
+    new Setting(containerEl).setName("Vault Maintenance — Settings").setHeading();
 
     new Setting(containerEl)
       .setName("Review container")
@@ -208,11 +209,17 @@ export default class VaultMaintenancePlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
 
+    // Obsidian's requestUrl is the network transport in the plugin (CORS-safe,
+    // proxy-aware); plain-Node dev/tests keep global fetch (src/http.ts).
+    setHttpTransport("requestUrl");
+
     // Set up global settings from plugin config
-    const vaultPath = (this.app.vault.adapter as any).basePath || "";
+    const vaultPath = (this.app.vault.adapter as FileSystemAdapter).getBasePath();
     updateSettings({
       vaultPath,
-      dbPath: `${vaultPath}/.note-maintainer/index.db`,
+      configDir: this.app.vault.configDir,
+      pluginDir: this.manifest.dir ?? "",
+      dbPath: `${vaultPath}/${INDEX_DB_SUFFIX}`,
       api: {
         apiKey: this.pluginSettings.apiKey,
         baseUrl: this.pluginSettings.apiBaseUrl,
@@ -363,6 +370,7 @@ export default class VaultMaintenancePlugin extends Plugin {
           }
           try {
             acceptProposal(filePath, proposal);
+            // eslint-disable-next-line @typescript-eslint/no-var-requires -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md)
             const { basename } = require("path");
             return {
               ok: true,
@@ -439,9 +447,11 @@ export default class VaultMaintenancePlugin extends Plugin {
 // ---------------------------------------------------------------------------
 
 function acceptProposal(filePath: string, proposal: ProposedChange): void {
+  /* eslint-disable @typescript-eslint/no-var-requires -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
   const fs = require("fs");
   const crypto = require("crypto");
   const path = require("path");
+  /* eslint-enable @typescript-eslint/no-var-requires */
 
   const absPath = path.join(settings.vaultPath, filePath);
 

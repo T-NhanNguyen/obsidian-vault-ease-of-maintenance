@@ -27,6 +27,8 @@ function count(dbPath: string, table: string): number {
 function makeSettings(vaultPath: string, dbPath: string): Settings {
   return {
     vaultPath,
+    configDir: "",
+    pluginDir: "",
     dbPath,
     inboxFolder: "",
     ignorePatterns: "",
