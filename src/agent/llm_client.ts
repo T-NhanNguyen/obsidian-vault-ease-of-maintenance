@@ -2,6 +2,7 @@
 // Provider-agnostic, fetch-based. Ported from src/agent/llm_client.py
 
 import { postJson } from "../http";
+import { errorMessage } from "../errors";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,11 +33,62 @@ export interface UsageData {
   totalTokens: number;
 }
 
+// Request-side wire shapes — producer-controlled by this plugin.
+export interface ChatMessage {
+  role: string;
+  content?: string | null;
+  tool_calls?: ToolCallData[];
+  tool_call_id?: string;
+  name?: string;
+}
+
+export interface ChatTool {
+  type?: string;
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
+
+// Response-side wire shapes — OpenAI-compatible subset actually consumed.
+interface RawChatMessage {
+  role?: string;
+  content?: string | null;
+  tool_calls?: RawToolCall[];
+  reasoning_content?: string;
+  model_extra?: Record<string, unknown>;
+}
+
+interface RawToolCall {
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+}
+
+interface ChatCompletionResponse {
+  id?: string;
+  choices?: Array<{
+    message?: RawChatMessage;
+    finish_reason?: string;
+  }>;
+  usage?: ChatUsage;
+}
+
+interface ChatUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
 export interface ILlmClient {
   chatCompletion(
     model: string,
-    messages: Array<Record<string, any>>,
-    tools?: Array<Record<string, any>> | null,
+    messages: ChatMessage[],
+    tools?: ChatTool[] | null,
   ): Promise<ChatResponse>;
 }
 
@@ -67,11 +119,11 @@ export class LocalLlmClient implements ILlmClient {
 
   async chatCompletion(
     model: string,
-    messages: Array<Record<string, any>>,
-    tools?: Array<Record<string, any>> | null,
+    messages: ChatMessage[],
+    tools?: ChatTool[] | null,
   ): Promise<ChatResponse> {
     const endpoint = `${this.baseUrl}/v1/chat/completions`;
-    const payload: Record<string, any> = {
+    const payload: Record<string, unknown> = {
       model: model || this.model,
       messages,
     };
@@ -104,10 +156,10 @@ export class OpenRouterClient implements ILlmClient {
 
   async chatCompletion(
     model: string,
-    messages: Array<Record<string, any>>,
-    tools?: Array<Record<string, any>> | null,
+    messages: ChatMessage[],
+    tools?: ChatTool[] | null,
   ): Promise<ChatResponse> {
-    const payload: Record<string, any> = { model, messages };
+    const payload: Record<string, unknown> = { model, messages };
     if (tools) {
       payload.tools = tools;
       payload.tool_choice = "auto";
@@ -134,11 +186,11 @@ export class OpenAiClient implements ILlmClient {
 
   async chatCompletion(
     model: string,
-    messages: Array<Record<string, any>>,
-    tools?: Array<Record<string, any>> | null,
+    messages: ChatMessage[],
+    tools?: ChatTool[] | null,
   ): Promise<ChatResponse> {
     const endpoint = `${this.baseUrl}/chat/completions`;
-    const payload: Record<string, any> = { model, messages };
+    const payload: Record<string, unknown> = { model, messages };
     if (tools) {
       payload.tools = tools;
       payload.tool_choice = "auto";
@@ -156,7 +208,7 @@ export class OpenAiClient implements ILlmClient {
 
 async function postWithRetry(
   endpoint: string,
-  payload: Record<string, any>,
+  payload: Record<string, unknown>,
   headers: Record<string, string>,
   clientLabel: string,
   opts: { handle503?: boolean; handle429?: boolean } = {},
@@ -183,10 +235,10 @@ async function postWithRetry(
         throw new Error(`HTTP ${result.status}`);
       }
 
-      return parseResponse((result.body ?? {}) as Record<string, any>);
-    } catch (e: any) {
+      return parseResponse(result.body as ChatCompletionResponse);
+    } catch (e) {
       const delay = Math.pow(DEFAULT_BACKOFF_BASE, attempt) * 2;
-      console.error(`${clientLabel}: error on attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES}: ${e.message}`);
+      console.error(`${clientLabel}: error on attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES}: ${errorMessage(e)}`);
       if (attempt === DEFAULT_MAX_RETRIES - 1) throw e;
       await sleep(delay * 1000);
     }
@@ -203,12 +255,12 @@ function sleep(ms: number): Promise<void> {
 // Response parsing
 // ---------------------------------------------------------------------------
 
-function parseResponse(data: Record<string, any>): ChatResponse {
+function parseResponse(data: ChatCompletionResponse): ChatResponse {
   if (!data || typeof data !== "object" || !Array.isArray(data.choices) || !data.choices[0]) {
     throw new Error("Malformed LLM response: missing choices");
   }
   const choice = data.choices[0];
-  const msg = choice.message;
+  const msg = choice.message ?? {};
   let content = msg.content || "";
 
   // Extract reasoning
@@ -228,10 +280,14 @@ function parseResponse(data: Record<string, any>): ChatResponse {
   };
 }
 
-function extractReasoning(msg: Record<string, any>, content: string): string | null {
+function extractReasoning(msg: RawChatMessage, content: string): string | null {
   const modelExtra = msg.model_extra;
-  if (modelExtra && typeof modelExtra === "object" && modelExtra.reasoning) {
-    return modelExtra.reasoning;
+  if (modelExtra && typeof modelExtra === "object") {
+    const modelReasoning = modelExtra.reasoning;
+    if (typeof modelReasoning === "string" && modelReasoning) return modelReasoning;
+    if ((typeof modelReasoning === "number" || typeof modelReasoning === "boolean") && modelReasoning) {
+      return String(modelReasoning);
+    }
   }
   if (msg.reasoning_content) return String(msg.reasoning_content);
   if (content.includes("<think>") && content.includes("</think>")) {
@@ -241,19 +297,19 @@ function extractReasoning(msg: Record<string, any>, content: string): string | n
   return null;
 }
 
-function mapToolCalls(raw: any): ToolCallData[] | undefined {
+function mapToolCalls(raw: RawToolCall[] | undefined): ToolCallData[] | undefined {
   if (!raw || !Array.isArray(raw)) return undefined;
-  return raw.map((tc: any) => ({
-    id: tc.id,
+  return raw.map((tc) => ({
+    id: tc.id || "",
     type: tc.type || "function",
     function: {
-      name: tc.function.name,
-      arguments: tc.function.arguments,
+      name: tc.function?.name || "",
+      arguments: tc.function?.arguments || "",
     },
   }));
 }
 
-function normalizeUsage(usage: any): UsageData {
+function normalizeUsage(usage: ChatUsage | undefined): UsageData {
   if (!usage || typeof usage !== "object") {
     return { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   }
