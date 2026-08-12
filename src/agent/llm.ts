@@ -2,6 +2,7 @@
 // Ported from src/agent/llm.py
 
 import { settings, resolveApiKey } from "../config";
+import { errorMessage } from "../errors";
 import { getLlmClient, detectProvider, type ILlmClient } from "./llm_client";
 
 // ---------------------------------------------------------------------------
@@ -45,8 +46,8 @@ export class Tool {
     try {
       const result = this.fn(...args);
       return result != null ? String(result) : "(empty)";
-    } catch (e: any) {
-      return `Error: ${e.message}`;
+    } catch (e) {
+      return `Error: ${errorMessage(e)}`;
     }
   }
 }
