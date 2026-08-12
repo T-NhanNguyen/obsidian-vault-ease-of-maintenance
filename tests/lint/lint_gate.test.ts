@@ -17,7 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { ESLint } from "eslint";
 
-const WARNING_BUDGET = 147;
+const WARNING_BUDGET = 100;
 const LINT_TARGETS = ["main.ts", "src/**/*.ts"];
 
 function isBotDemoted(ruleId: string | null | undefined): boolean {

@@ -184,7 +184,7 @@ export async function runCleanup(
       toolImpl.APPLY_EDITS_TOOL.description,
       toolImpl.APPLY_EDITS_TOOL.parameters,
       // LLM tool args arrive as parsed JSON spread into the fn params (ported from Python **kwargs).
-      (...args: unknown[]) => toolImpl.applyEdits(args[0] as string, args[1] as Array<Record<string, unknown>>),
+      (...args: unknown[]) => toolImpl.applyEdits(args[0] as string, args[1] as toolImpl.EditOp[]),
     ),
   ];
 

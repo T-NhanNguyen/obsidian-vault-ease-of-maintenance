@@ -116,16 +116,31 @@ export async function searchIndex(query: string, topK: number = 5): Promise<stri
 // apply_edits — the ONLY mutation tool
 // ---------------------------------------------------------------------------
 
-function validateOp(op: Record<string, any>, lines: string[]): string | null {
+// Edit operation JSON produced by the LLM tool call (validated at runtime).
+export interface OpAnchor {
+  start?: number;
+  end?: number;
+  before_line?: number;
+}
+
+export interface EditOp {
+  op: string;
+  kind?: string;
+  anchor?: OpAnchor;
+  text?: string;
+  reason?: string;
+}
+
+function validateOp(op: EditOp, lines: string[]): string | null {
   const kind = op.op;
-  const anchor = op.anchor || {};
+  const anchor: OpAnchor = op.anchor || {};
   const maxLine = lines.length;
 
   if (!["join_lines", "insert_header", "remove_span", "collapse_blanks", "insert_flag"].includes(kind)) {
     return `UNKNOWN_OP: ${kind}`;
   }
 
-  for (const key of ["start", "end", "before_line"]) {
+  for (const key of ["start", "end", "before_line"] as const) {
     const val = anchor[key];
     if (val !== undefined && (typeof val !== "number" || val < 1 || val > maxLine + 10)) {
       return `INVALID_ANCHOR: ${key}=${val} (max_line=${maxLine})`;
@@ -140,7 +155,7 @@ function validateOp(op: Record<string, any>, lines: string[]): string | null {
 
   if (kind === "remove_span") {
     const validKinds = ["tag", "properties_block"];
-    if (!validKinds.includes(op.kind)) {
+    if (!validKinds.includes(op.kind || "")) {
       return `INVALID_KIND: ${op.kind} (expected ${validKinds.join(", ")})`;
     }
   }
@@ -148,7 +163,7 @@ function validateOp(op: Record<string, any>, lines: string[]): string | null {
   return null;
 }
 
-export function applyEdits(handle: string, ops: Array<Record<string, any>>): string {
+export function applyEdits(handle: string, ops: EditOp[]): string {
   const reg = getRegistry();
   let filePath: string;
   try {
@@ -163,7 +178,7 @@ export function applyEdits(handle: string, ops: Array<Record<string, any>>): str
 
   // Validate ops before applying
   const rejected: Array<{ op: string; reason: string }> = [];
-  const validOps: Array<Record<string, any>> = [];
+  const validOps: EditOp[] = [];
 
   for (const op of ops) {
     const err = validateOp(op, lines);
@@ -189,26 +204,26 @@ export function applyEdits(handle: string, ops: Array<Record<string, any>>): str
   for (const op of validOps) {
     const kind = op.op;
     diffStat[kind] = (diffStat[kind] || 0) + 1;
-    const anchor = op.anchor;
+    const anchor: OpAnchor = op.anchor || {};
 
     if (kind === "join_lines") {
-      const s = anchor.start - 1 + offset;
-      const e = anchor.end - 1 + offset;
+      const s = Number(anchor.start) - 1 + offset;
+      const e = Number(anchor.end) - 1 + offset;
       lines[s] = lines.slice(s, e + 1).map((l: string) => l.trim()).join(" ");
       lines.splice(s + 1, e - s);
       offset -= e - s;
     } else if (kind === "insert_header") {
-      const idx = anchor.before_line - 1 + offset;
-      lines.splice(idx, 0, op.text);
+      const idx = Number(anchor.before_line) - 1 + offset;
+      lines.splice(idx, 0, op.text || "");
       offset += 1;
     } else if (kind === "remove_span") {
-      const s = anchor.start - 1 + offset;
-      const e = anchor.end - 1 + offset;
+      const s = Number(anchor.start) - 1 + offset;
+      const e = Number(anchor.end) - 1 + offset;
       lines.splice(s, e - s + 1);
       offset -= e - s + 1;
     } else if (kind === "collapse_blanks") {
-      const s = anchor.start - 1 + offset;
-      const e = anchor.end - 1 + offset;
+      const s = Number(anchor.start) - 1 + offset;
+      const e = Number(anchor.end) - 1 + offset;
       const blankCount = lines.slice(s, Math.min(e + 1, lines.length))
         .filter((l: string) => !l.trim()).length;
       if (blankCount > 1) {
@@ -230,7 +245,7 @@ export function applyEdits(handle: string, ops: Array<Record<string, any>>): str
         lines = newLines;
       }
     } else if (kind === "insert_flag") {
-      const idx = anchor.before_line - 1 + offset;
+      const idx = Number(anchor.before_line) - 1 + offset;
       const flag = `<!-- review: ${op.reason || "flag"} -->`;
       lines.splice(idx, 0, flag);
       offset += 1;
@@ -249,8 +264,8 @@ export function applyEdits(handle: string, ops: Array<Record<string, any>>): str
   // Run validators
   const sanctionWords: string[] = [];
   for (const op of ops) {
-    if (op.op === "remove_span" && ["tag", "properties_block"].includes(op.kind)) {
-      sanctionWords.push(op.kind);
+    if (op.op === "remove_span" && ["tag", "properties_block"].includes(op.kind || "")) {
+      sanctionWords.push(op.kind || "");
     }
   }
 
@@ -281,7 +296,7 @@ export function applyEdits(handle: string, ops: Array<Record<string, any>>): str
 // apply_edits_impl — compute receipt without writing to disk
 // ---------------------------------------------------------------------------
 
-export function applyEditsImpl(handle: string, ops: Array<Record<string, any>>): string {
+export function applyEditsImpl(handle: string, ops: EditOp[]): string {
   const reg = getRegistry();
   let filePath: string;
   try {
@@ -294,7 +309,7 @@ export function applyEditsImpl(handle: string, ops: Array<Record<string, any>>):
   let lines = before.content.split("\n");
 
   const rejected: Array<{ op: string; reason: string }> = [];
-  const validOps: Array<Record<string, any>> = [];
+  const validOps: EditOp[] = [];
 
   for (const op of ops) {
     const err = validateOp(op, lines);
@@ -320,26 +335,26 @@ export function applyEditsImpl(handle: string, ops: Array<Record<string, any>>):
   for (const op of validOps) {
     const kind = op.op;
     diffStat[kind] = (diffStat[kind] || 0) + 1;
-    const anchor = op.anchor;
+    const anchor: OpAnchor = op.anchor || {};
 
     if (kind === "join_lines") {
-      const s = anchor.start - 1 + offset;
-      const e = anchor.end - 1 + offset;
+      const s = Number(anchor.start) - 1 + offset;
+      const e = Number(anchor.end) - 1 + offset;
       lines[s] = lines.slice(s, e + 1).map((l: string) => l.trim()).join(" ");
       lines.splice(s + 1, e - s);
       offset -= e - s;
     } else if (kind === "insert_header") {
-      const idx = anchor.before_line - 1 + offset;
-      lines.splice(idx, 0, op.text);
+      const idx = Number(anchor.before_line) - 1 + offset;
+      lines.splice(idx, 0, op.text || "");
       offset += 1;
     } else if (kind === "remove_span") {
-      const s = anchor.start - 1 + offset;
-      const e = anchor.end - 1 + offset;
+      const s = Number(anchor.start) - 1 + offset;
+      const e = Number(anchor.end) - 1 + offset;
       lines.splice(s, e - s + 1);
       offset -= e - s + 1;
     } else if (kind === "collapse_blanks") {
-      const s = anchor.start - 1 + offset;
-      const e = anchor.end - 1 + offset;
+      const s = Number(anchor.start) - 1 + offset;
+      const e = Number(anchor.end) - 1 + offset;
       const blankCount = lines.slice(s, Math.min(e + 1, lines.length))
         .filter((l: string) => !l.trim()).length;
       if (blankCount > 1) {
@@ -361,7 +376,7 @@ export function applyEditsImpl(handle: string, ops: Array<Record<string, any>>):
         lines = newLines;
       }
     } else if (kind === "insert_flag") {
-      const idx = anchor.before_line - 1 + offset;
+      const idx = Number(anchor.before_line) - 1 + offset;
       const flag = `<!-- review: ${op.reason || "flag"} -->`;
       lines.splice(idx, 0, flag);
       offset += 1;
@@ -373,8 +388,8 @@ export function applyEditsImpl(handle: string, ops: Array<Record<string, any>>):
 
   const sanctionWords: string[] = [];
   for (const op of ops) {
-    if (op.op === "remove_span" && ["tag", "properties_block"].includes(op.kind)) {
-      sanctionWords.push(op.kind);
+    if (op.op === "remove_span" && ["tag", "properties_block"].includes(op.kind || "")) {
+      sanctionWords.push(op.kind || "");
     }
   }
 
