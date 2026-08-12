@@ -183,8 +183,7 @@ export async function runCleanup(
       toolImpl.APPLY_EDITS_TOOL.name,
       toolImpl.APPLY_EDITS_TOOL.description,
       toolImpl.APPLY_EDITS_TOOL.parameters,
-      // LLM tool args arrive as parsed JSON spread into the fn params (ported from Python **kwargs).
-      (...args: unknown[]) => toolImpl.applyEdits(args[0] as string, args[1] as toolImpl.EditOp[]),
+      toolImpl.applyEdits,
     ),
   ];
 
@@ -572,7 +571,7 @@ export async function runChatQuery(
     CITE_SOURCE_TOOL.name,
     CITE_SOURCE_TOOL.description,
     CITE_SOURCE_TOOL.parameters,
-    (...args: unknown[]) => citeSource(args[0] as { source_id: number }),
+    citeSource,
   );
 
   try {

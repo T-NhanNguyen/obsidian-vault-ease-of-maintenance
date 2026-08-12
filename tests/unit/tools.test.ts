@@ -1,0 +1,262 @@
+// apply_edits tool-call path tests — handoff [TEST-01..05].
+//
+// The dispatch-shape regression: LLM tool args arrive as ONE parsed JSON
+// object; Tool.call passes it whole to the fn. applyEdits(handle, ops) used
+// to receive handle=<object>, ops=undefined and always error via reg.resolve.
+// These tests pin the args-object contract, the error containment, the
+// per-op edit matrix, and the snake_case receipt wire format.
+
+import { describe, it, expect, afterAll } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { Tool } from "../../src/agent/llm";
+import {
+  APPLY_EDITS_TOOL,
+  CITE_SOURCE_TOOL,
+  applyEdits,
+  citeSource,
+  resetCitationTracker,
+} from "../../src/agent/tools";
+import { updateSettings, defaultSettings } from "../../src/config";
+import { DatabaseManager } from "../../src/indexer/db";
+import { makeToolVault, tmpFilesIn } from "../fixtures/tool_helpers";
+
+const BASE_NOTE = [
+  "# Title",
+  "",
+  "First paragraph line one.",
+  "Second paragraph line one.",
+  "",
+  "",
+  "Third paragraph line one.",
+].join("\n");
+
+function applyEditsTool(): Tool {
+  return new Tool(
+    APPLY_EDITS_TOOL.name,
+    APPLY_EDITS_TOOL.description,
+    APPLY_EDITS_TOOL.parameters,
+    applyEdits,
+  );
+}
+
+afterAll(() => {
+  updateSettings(defaultSettings());
+});
+
+describe("apply_edits dispatch shape (TEST-01)", () => {
+  it("Tool.call receives the whole args object and returns a receipt with receipt_id", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    const result = applyEditsTool().call({
+      handle: vault.handle,
+      ops: [{ op: "join_lines", anchor: { start: 3, end: 4 } }],
+    });
+    const receipt = JSON.parse(result) as {
+      receipt_id: string;
+      ops_applied: number;
+      validation: { passed: boolean };
+    };
+    expect(receipt.receipt_id).toMatch(/^r_\d{4}$/);
+    expect(receipt.ops_applied).toBe(1);
+    expect(fs.readFileSync(vault.notePath, "utf-8")).toBe(
+      [
+        "# Title",
+        "",
+        "First paragraph line one. Second paragraph line one.",
+        "",
+        "",
+        "Third paragraph line one.",
+      ].join("\n")
+    );
+    expect(tmpFilesIn(vault.vaultDir)).toEqual([]);
+  });
+
+  it("receipt wire format is snake_case (receipt_id, hash_before, ops_applied)", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    const result = applyEditsTool().call({
+      handle: vault.handle,
+      ops: [{ op: "join_lines", anchor: { start: 3, end: 4 } }],
+    });
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    expect(parsed.receipt_id).toBeDefined();
+    expect(parsed.hash_before).toBeDefined();
+    expect(parsed.hash_after).toBeDefined();
+    expect(parsed.ops_applied).toBeDefined();
+    expect(parsed.ops_rejected).toBeDefined();
+    expect(parsed.diff_stat).toBeDefined();
+    expect(parsed.validation).toBeDefined();
+  });
+});
+
+describe("Tool.call error containment (TEST-02)", () => {
+  it("surfaces thrown errors as 'Error: <message>'", () => {
+    const tool = new Tool("boom", "d", {}, () => {
+      throw new Error("kaboom");
+    });
+    expect(tool.call({})).toBe("Error: kaboom");
+  });
+
+  it("maps null and undefined results to (empty)", () => {
+    const nullTool = new Tool(
+      "null",
+      "d",
+      {},
+      (() => null) as unknown as (args: Record<string, unknown>) => string,
+    );
+    expect(nullTool.call({})).toBe("(empty)");
+
+    const undefTool = new Tool(
+      "undef",
+      "d",
+      {},
+      (() => undefined) as unknown as (args: Record<string, unknown>) => string,
+    );
+    expect(undefTool.call({})).toBe("(empty)");
+  });
+});
+
+describe("cite_source through Tool.call (TEST-03)", () => {
+  it("returns [n] markers through the dispatch path", () => {
+    resetCitationTracker();
+    const tool = new Tool(
+      CITE_SOURCE_TOOL.name,
+      CITE_SOURCE_TOOL.description,
+      CITE_SOURCE_TOOL.parameters,
+      citeSource,
+    );
+    expect(tool.call({ source_id: 1 })).toBe("[1]");
+    expect(tool.call({ source_id: 2 })).toBe("[2]");
+    expect(tool.call({ source_id: 1 })).toBe("[1]");
+  });
+
+  it("rejects invalid source_id values", () => {
+    resetCitationTracker();
+    const tool = new Tool(
+      CITE_SOURCE_TOOL.name,
+      CITE_SOURCE_TOOL.description,
+      CITE_SOURCE_TOOL.parameters,
+      citeSource,
+    );
+    expect(tool.call({ source_id: 0 })).toContain("Error");
+    expect(tool.call({})).toContain("Error");
+  });
+});
+
+describe("apply_edits per-op matrix (TEST-04)", () => {
+  it("join_lines merges a range into one line", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    applyEditsTool().call({
+      handle: vault.handle,
+      ops: [{ op: "join_lines", anchor: { start: 3, end: 4 } }],
+    });
+    const written = fs.readFileSync(vault.notePath, "utf-8");
+    expect(written).toContain("First paragraph line one. Second paragraph line one.");
+    expect(written).not.toContain("First paragraph line one.\nSecond");
+  });
+
+  it("insert_header inserts text before a line", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    applyEditsTool().call({
+      handle: vault.handle,
+      ops: [{ op: "insert_header", anchor: { before_line: 3 }, text: "# New Section" }],
+    });
+    const written = fs.readFileSync(vault.notePath, "utf-8");
+    expect(written).toContain("# New Section\nFirst paragraph line one.");
+  });
+
+  it("remove_span removes a tagged range", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    applyEditsTool().call({
+      handle: vault.handle,
+      ops: [{ op: "remove_span", kind: "tag", anchor: { start: 3, end: 4 } }],
+    });
+    const written = fs.readFileSync(vault.notePath, "utf-8");
+    expect(written).not.toContain("First paragraph line one.");
+    expect(written).not.toContain("Second paragraph line one.");
+    expect(written).toContain("Third paragraph line one.");
+  });
+
+  it("collapse_blanks keeps a single blank line", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    applyEditsTool().call({
+      handle: vault.handle,
+      ops: [{ op: "collapse_blanks", anchor: { start: 5, end: 6 } }],
+    });
+    const written = fs.readFileSync(vault.notePath, "utf-8");
+    expect(written).toBe(
+      [
+        "# Title",
+        "",
+        "First paragraph line one.",
+        "Second paragraph line one.",
+        "",
+        "Third paragraph line one.",
+      ].join("\n")
+    );
+  });
+
+  it("insert_flag inserts a review comment", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    applyEditsTool().call({
+      handle: vault.handle,
+      ops: [{ op: "insert_flag", anchor: { before_line: 3 }, reason: "needs review" }],
+    });
+    const written = fs.readFileSync(vault.notePath, "utf-8");
+    expect(written).toContain("<!-- review: needs review -->\nFirst paragraph line one.");
+  });
+
+  it("returns ALL_OPS_REJECTED and leaves the file unchanged when every op is invalid", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    const result = applyEditsTool().call({
+      handle: vault.handle,
+      ops: [{ op: "bogus_op", anchor: {} }],
+    });
+    const parsed = JSON.parse(result) as { error: string; file_unchanged: boolean };
+    expect(parsed.error).toBe("ALL_OPS_REJECTED");
+    expect(parsed.file_unchanged).toBe(true);
+    expect(fs.readFileSync(vault.notePath, "utf-8")).toBe(BASE_NOTE);
+    expect(tmpFilesIn(vault.vaultDir)).toEqual([]);
+  });
+
+  it("keeps the pre-existing NaN slice/splice behavior for missing anchors", () => {
+    const vault = makeToolVault(BASE_NOTE);
+    const tool = applyEditsTool();
+
+    // join_lines with no anchor: Number(undefined) - 1 = NaN, slice/splice
+    // treat NaN as 0 → the op is a no-op on the file (do NOT "fix" to
+    // 0-based indexing; pin the current semantics as a regression guard).
+    const joinResult = tool.call({ handle: vault.handle, ops: [{ op: "join_lines", anchor: {} }] });
+    const joinReceipt = JSON.parse(joinResult) as { receipt_id: string };
+    expect(joinReceipt.receipt_id).toMatch(/^r_\d{4}$/);
+    expect(fs.readFileSync(vault.notePath, "utf-8")).toBe(BASE_NOTE);
+
+    // insert_header with no before_line: splice(NaN, ...) inserts at index 0.
+    const insertResult = tool.call({
+      handle: vault.handle,
+      ops: [{ op: "insert_header", anchor: {}, text: "# Top" }],
+    });
+    const insertReceipt = JSON.parse(insertResult) as { receipt_id: string };
+    expect(insertReceipt.receipt_id).toMatch(/^r_\d{4}$/);
+    expect(fs.readFileSync(vault.notePath, "utf-8")).toBe("# Top\n" + BASE_NOTE);
+  });
+});
+
+describe("getWikilinkEdges row casing (TEST-05)", () => {
+  it("returns snake_case EdgeRow fields, not camelCase Edge casts", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nm-db-"));
+    const db = new DatabaseManager(path.join(tmpDir, "index.db"));
+    db.initialize();
+    db.insertEdges([{ srcKey: "f_0001", dstKey: "f_0002", kind: "wikilink", weight: 1 }]);
+    const rows = db.getWikilinkEdges("f_0001");
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.src_key).toBe("f_0001");
+    expect(row.dst_key).toBe("f_0002");
+    expect(row.kind).toBe("wikilink");
+    expect(row.weight).toBe(1);
+    // The old `as Edge[]` cast mapped snake_case rows onto camelCase fields,
+    // leaving srcKey undefined — pin that regression so it cannot return.
+    expect(Object.prototype.hasOwnProperty.call(row, "srcKey")).toBe(false);
+  });
+});

@@ -163,7 +163,17 @@ function validateOp(op: EditOp, lines: string[]): string | null {
   return null;
 }
 
-export function applyEdits(handle: string, ops: EditOp[]): string {
+// Wire boundary: the LLM tool-call args arrive as one parsed JSON object
+// (see ToolFn in llm.ts). The double cast through unknown is the canonical
+// untrusted-wire idiom — validateOp below guards op/kind/anchor shapes, so
+// do not trust the wire beyond this point.
+export interface ApplyEditsArgs {
+  handle: string;
+  ops: EditOp[];
+}
+
+export function applyEdits(args: Record<string, unknown>): string {
+  const { handle, ops } = args as unknown as ApplyEditsArgs;
   const reg = getRegistry();
   let filePath: string;
   try {
@@ -296,7 +306,8 @@ export function applyEdits(handle: string, ops: EditOp[]): string {
 // apply_edits_impl — compute receipt without writing to disk
 // ---------------------------------------------------------------------------
 
-export function applyEditsImpl(handle: string, ops: EditOp[]): string {
+export function applyEditsImpl(args: Record<string, unknown>): string {
+  const { handle, ops } = args as unknown as ApplyEditsArgs;
   const reg = getRegistry();
   let filePath: string;
   try {
@@ -572,8 +583,12 @@ export function resetCitationTracker(): void {
   citationIndexMap.clear();
 }
 
-export function citeSource(args: { source_id: number }): string {
-  const sourceId = Number(args.source_id);
+export interface CiteSourceArgs {
+  source_id: number;
+}
+
+export function citeSource(args: Record<string, unknown>): string {
+  const sourceId = Number((args as unknown as CiteSourceArgs).source_id);
   if (!Number.isFinite(sourceId) || sourceId < 1) {
     return "Error: source_id must be a positive integer";
   }

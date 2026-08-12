@@ -545,14 +545,17 @@ export class Journal {
 // Receipt — verifiable proof of work
 // ---------------------------------------------------------------------------
 
+// Wire shape of a receipt (what apply_edits returns as JSON and the runtime
+// parses back) — snake_case, matching the Python original's to_dict() and
+// EditReceipt in runtime.ts.
 export interface ReceiptData {
-  receiptId: string;
+  receipt_id: string;
   handle: string;
-  hashBefore: string;
-  hashAfter: string;
-  opsApplied: number;
-  opsRejected: number;
-  diffStat: Record<string, number>;
+  hash_before: string;
+  hash_after: string;
+  ops_applied: number;
+  ops_rejected: number;
+  diff_stat: Record<string, number>;
   validation: {
     passed: boolean;
     checks: Record<string, string>;
@@ -602,13 +605,13 @@ export class Receipt {
 
   toDict(): ReceiptData {
     return {
-      receiptId: this.receiptId,
+      receipt_id: this.receiptId,
       handle: this.handle,
-      hashBefore: this.hashBefore,
-      hashAfter: this.hashAfter,
-      opsApplied: this.opsApplied,
-      opsRejected: this.opsRejected,
-      diffStat: this.diffStat,
+      hash_before: this.hashBefore,
+      hash_after: this.hashAfter,
+      ops_applied: this.opsApplied,
+      ops_rejected: this.opsRejected,
+      diff_stat: this.diffStat,
       validation: this.validation,
     };
   }

@@ -9,7 +9,11 @@ import { getLlmClient, detectProvider, type ILlmClient, type ChatMessage, type C
 // Tool definition
 // ---------------------------------------------------------------------------
 
-export type ToolFn = (...args: unknown[]) => string;
+// Tool fns receive the parsed JSON args object as their single argument
+// (the Python original bound **kwargs to named params; TS has no kwargs,
+// so the fn contract is the args object itself). Implementations cast to
+// their declared shape at the top (see ApplyEditsArgs in tools.ts).
+export type ToolFn = (args: Record<string, unknown>) => string;
 
 export class Tool {
   name: string;
@@ -40,9 +44,9 @@ export class Tool {
     };
   }
 
-  call(...args: unknown[]): string {
+  call(args: Record<string, unknown>): string {
     try {
-      const result = this.fn(...args);
+      const result = this.fn(args);
       return result != null ? String(result) : "(empty)";
     } catch (e) {
       return `Error: ${errorMessage(e)}`;
@@ -58,12 +62,13 @@ export class LLMClient {
   private model: string;
   private llm: ILlmClient;
 
-  constructor(model?: string) {
+  // The optional llm param is a test seam only: a fake ILlmClient drives the
+  // real chat() loop without HTTP. The ?? fallback keeps the default branch
+  // byte-for-byte identical to the pre-seam behavior; the seam never grows
+  // into a config surface.
+  constructor(model?: string, llm?: ILlmClient) {
     this.model = model || settings.agent.model;
-    const apiKey = resolveApiKey();
-    const baseUrl = settings.api.baseUrl;
-    const provider = detectProvider(baseUrl || "");
-    this.llm = getLlmClient(provider, this.model, apiKey, baseUrl);
+    this.llm = llm ?? getLlmClient(detectProvider(settings.api.baseUrl || ""), this.model, resolveApiKey(), settings.api.baseUrl);
   }
 
   async chat(
