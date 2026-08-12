@@ -26,6 +26,7 @@ import {
 import { Embedder } from "../indexer/embedder";
 import { Indexer } from "../indexer/indexer";
 import { DatabaseManager } from "../indexer/db";
+import type { ChatMessage } from "./llm_client";
 import { ManifestEntry, ManifestParser, TocReader } from "../indexer/manifest";
 import type { ChatQueryResult, ChatQueryResponse } from "../types";
 
@@ -66,14 +67,29 @@ function loadSkill(skillName: string): string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function collectReceipts(history: Array<Record<string, any>>): Array<Record<string, any>> {
-  const receipts: Array<Record<string, any>> = [];
+// Receipt JSON returned by apply_edits on the tool-call path (see tools.ts).
+interface EditReceipt {
+  receipt_id?: string;
+  error?: string;
+  rejected?: Array<{ op: string; reason: string }>;
+  ops_applied?: number;
+  ops_rejected?: number;
+  validation?: {
+    passed?: boolean;
+    checks?: Record<string, string>;
+  };
+  hash_before?: string;
+  hash_after?: string;
+}
+
+function collectReceipts(history: ChatMessage[]): EditReceipt[] {
+  const receipts: EditReceipt[] = [];
   for (const msg of history) {
     if (msg.role === "tool" && msg.content) {
       const c = msg.content.trim();
       if (c.startsWith("{")) {
         try {
-          const d = JSON.parse(c);
+          const d = JSON.parse(c) as EditReceipt;
           if (d.receipt_id) receipts.push(d);
         } catch { /* ignore */ }
       }
@@ -195,8 +211,8 @@ export async function runCleanup(
       const checks = r.validation?.checks || {};
       const validation: Record<string, [boolean, string]> = {};
       for (const [k, v] of Object.entries(checks)) {
-        const passed = (v as string).endsWith(": pass");
-        validation[k] = [passed, v as string];
+        const passed = v.endsWith(": pass");
+        validation[k] = [passed, v];
       }
 
       // Revert file to original
@@ -210,8 +226,8 @@ export async function runCleanup(
       );
     } else {
       // Legacy path
-      if (!r.validation.passed) {
-        const fails = Object.entries(r.validation.checks as Record<string, string>)
+      if (!r.validation?.passed) {
+        const fails = Object.entries(r.validation?.checks || {})
           .filter(([k, v]) => !v.startsWith(k + ": pass"))
           .map(([k, v]) => `  - ${k}: ${v}`)
           .join("\n");
@@ -621,13 +637,12 @@ export async function runBuild(vaultPath: string): Promise<string> {
 
 export async function generateManifest(vaultPath: string): Promise<string> {
   const db = new DatabaseManager(settings.dbPath);
-  // We access the db directly via the connect method
-  const conn = (db as any).connect() as import("better-sqlite3").Database;
+  const conn = db.connect();
   const patterns = parseIgnorePatterns(settings.ignorePatterns);
 
-  const rows = conn.prepare(
+  const rows = conn.prepare<[], { folder: string; path: string }>(
     "SELECT folder, path FROM FILES WHERE folder != '' ORDER BY folder, path"
-  ).all() as any[];
+  ).all();
 
   const folderFiles = new Map<string, string[]>();
   for (const { folder, path: fpath } of rows) {
@@ -653,7 +668,7 @@ export async function generateManifest(vaultPath: string): Promise<string> {
   }
 
   for (const folder of sortedFolders) {
-    const wikilinks = conn.prepare(`
+    const wikilinks = conn.prepare<[string], { name: string; cnt: number }>(`
       SELECT e.name, COUNT(*) as cnt
       FROM ENTITIES e
       JOIN SECTION_ENTITIES se ON e.entity_id = se.entity_id
@@ -661,21 +676,21 @@ export async function generateManifest(vaultPath: string): Promise<string> {
       JOIN FILES f ON s.file_id = f.file_id
       WHERE f.folder = ? AND e.type = 'wikilink'
       GROUP BY e.name ORDER BY cnt DESC LIMIT 6
-    `).all(folder) as any[];
+    `).all(folder);
 
-    const headings = conn.prepare(`
+    const headings = conn.prepare<[string], { heading_path: string; text: string }>(`
       SELECT s.heading_path, s.text
       FROM SECTIONS s JOIN FILES f ON s.file_id = f.file_id
       WHERE f.folder = ? AND s.heading_path != '' AND s.text != ''
       LIMIT 3
-    `).all(folder) as any[];
+    `).all(folder);
 
     syllabusLines.push(`\n### ${folder}/`);
     if (wikilinks.length > 0) {
-      syllabusLines.push("  Wikilinks: " + wikilinks.slice(0, 5).map((w: any) => `[[${w.name}]]`).join(", "));
+      syllabusLines.push("  Wikilinks: " + wikilinks.slice(0, 5).map((w) => `[[${w.name}]]`).join(", "));
     }
     for (const { heading_path, text } of headings) {
-      const snippet = (text as string).slice(0, 100).replace(/\n/g, " ");
+      const snippet = text.slice(0, 100).replace(/\n/g, " ");
       syllabusLines.push(`  - ${heading_path}: ${snippet}...`);
     }
   }
@@ -800,15 +815,26 @@ function discoverUnits(handles: string[]): Array<{ id: string; handle: string; t
   return units;
 }
 
+// Candidate produced by scoreCandidates — feeds sort decisions and filters.
+interface CandidateInfo {
+  handle: string;
+  filePath: string;
+  heading: string;
+  score: number;
+  snippet: string;
+  contentHash: string;
+  fileContentHash: string;
+}
+
 async function scoreCandidates(
   text: string,
   opCtx: OperationContext,
   srcHandle: string,
   topK: number = 5,
-): Promise<[Array<Record<string, any>>, Array<Record<string, any>>]> {
+): Promise<[CandidateInfo[], CandidateInfo[]]> {
   const OVERSCAN = 3;
-  const nearDups: Array<Record<string, any>> = [];
-  const eligible: Array<Record<string, any>> = [];
+  const nearDups: CandidateInfo[] = [];
+  const eligible: CandidateInfo[] = [];
 
   try {
     const embedder = new Embedder(settings);
@@ -822,7 +848,7 @@ async function scoreCandidates(
       let h: string;
       try { h = reg.getHandle(fp); } catch { h = r.filePath; }
 
-      const c: Record<string, any> = {
+      const c: CandidateInfo = {
         handle: h, filePath: r.filePath, heading: r.headingPath,
         score: r.score, snippet: r.text.slice(0, 150),
         contentHash: r.contentHash,
@@ -852,7 +878,7 @@ function pathMatchesPatterns(relPath: string, patterns: string[]): boolean {
   });
 }
 
-function filterIgnoredCandidates(candidates: Array<Record<string, any>>, patterns: string[]): Array<Record<string, any>> {
+function filterIgnoredCandidates(candidates: CandidateInfo[], patterns: string[]): CandidateInfo[] {
   if (patterns.length === 0) return candidates;
   return candidates.filter(c => !pathMatchesPatterns(c.filePath || "", patterns));
 }

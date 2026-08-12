@@ -159,7 +159,7 @@ export class DatabaseManager {
     this.dbPath = dbPath;
   }
 
-  private connect(): Database.Database {
+  connect(): Database.Database {
     if (this.db) return this.db;
     const dir = path.dirname(this.dbPath);
     if (!fs.existsSync(dir)) {
