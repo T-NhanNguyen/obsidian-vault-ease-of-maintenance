@@ -1,5 +1,5 @@
 {
-  "description": "A vault management tool with agentic capabilities that is self contained within the plugin. Currently it is a BYOK system or self hosted, but I'm working on providing another layer of convinience down the line",
+  "description": "A vault management tool with agentic capabilities that is self contained within the plugin. Currently it is a BYOK system or self hosted, but I'm working on providing another layer of convinience down the line.",
   "id": "ease-of-maintenance",
   "isDesktopOnly": true,
   "author": "T-NhanNguyen",

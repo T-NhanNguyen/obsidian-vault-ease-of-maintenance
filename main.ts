@@ -73,7 +73,7 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("Vault Maintenance — Settings").setHeading();
+    new Setting(containerEl).setName("Vault Maintenance").setHeading();
 
     new Setting(containerEl)
       .setName("Review container")
@@ -451,7 +451,7 @@ function acceptProposal(filePath: string, proposal: ProposedChange): void {
   const fs = require("fs");
   const crypto = require("crypto");
   const path = require("path");
-  /* eslint-enable @typescript-eslint/no-var-requires */
+  /* eslint-enable @typescript-eslint/no-var-requires -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
 
   const absPath = path.join(settings.vaultPath, filePath);
 

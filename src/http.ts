@@ -49,7 +49,7 @@ export async function postJson(
     };
   }
 
-  // eslint-disable-next-line -- kept for plain-Node dev/tests; requestUrl is the plugin transport
+  // Kept for plain-Node dev/tests; requestUrl is the plugin transport (global fetch is not restricted inside plain Node).
   const response = await fetch(url, {
     method: "POST",
     headers,
