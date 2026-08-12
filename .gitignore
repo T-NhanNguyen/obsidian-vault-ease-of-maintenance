@@ -26,3 +26,6 @@ main.js
 # Tooling / agent state
 .pi/
 build-plugin.sh
+
+# Private development journal (Obsidian vault) — never commit
+.dev-vault/
