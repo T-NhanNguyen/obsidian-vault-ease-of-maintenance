@@ -12,7 +12,7 @@ export function renderValidationBanner(validation: Record<string, any>): string 
 
   const items = Object.entries(checks)
     .filter(([k, v]) => !(v as string).startsWith(k + ": pass"))
-    .map(([k, v]) => `<li><strong>${k}</strong>: ${v}</li>`);
+    .map(([k, v]) => `<li><strong>${k}</strong>: ${String(v)}</li>`);
 
   if (items.length === 0) {
     return '<div class="banner banner-pass">All validators passed — review the diff below.</div>';

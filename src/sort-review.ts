@@ -53,7 +53,7 @@ export async function renderSortReview(
 
     if (payload.manifest_constitution) {
         const box = container.createDiv({ cls: "nm-box nm-manifest" });
-        box.createEl("h3", { text: "Manifest Constitution" });
+        box.createEl("h3", { text: "Manifest constitution" });
         box.createEl("pre", { text: payload.manifest_constitution });
     }
 }

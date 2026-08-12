@@ -19,12 +19,12 @@ import { settings } from "../config";
 
 function resolveBetterSqlite3(): typeof Database {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires -- bare require keeps plain-Node dev/tests working
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- bare require keeps plain-Node dev/tests working
     return require("better-sqlite3");
   } catch (bareErr) {
     for (const candidate of collectCandidatePaths()) {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires -- absolute-path fallback for Obsidian's loader (see TROUBLESHOOTING-NOTES.md)
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- absolute-path fallback for Obsidian's loader (see TROUBLESHOOTING-NOTES.md)
         return require(candidate);
       } catch (e) {
         console.error(`[db] better-sqlite3 candidate failed: ${candidate} -> ${(e as Error).message}`);
@@ -204,7 +204,6 @@ export class DatabaseManager {
     for (const table of dropOrder) {
       if (v1Tables.has(table)) {
         conn.prepare(`DROP TABLE IF EXISTS ${table}`).run();
-        console.log(`  [db] Migrated: dropped v1 table ${table}`);
       }
     }
 
@@ -222,7 +221,6 @@ export class DatabaseManager {
       for (const col of columns) {
         if (!existing.has(col)) {
           conn.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`).run();
-          console.log(`  [db] Migrated: added ${table}.${col}`);
         }
       }
     }

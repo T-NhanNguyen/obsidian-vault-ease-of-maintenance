@@ -60,7 +60,7 @@ function styleCitations(root: HTMLElement): void {
     for (const textNode of textNodes) {
         const parent = textNode.parentElement;
         if (!parent) continue;
-        const fragment = document.createDocumentFragment();
+        const fragment = createFragment();
         const parts = (textNode.nodeValue || "").split(CITATION_SPLIT_RE);
         for (const part of parts) {
             if (!part) continue;

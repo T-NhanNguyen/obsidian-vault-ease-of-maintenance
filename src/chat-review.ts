@@ -105,7 +105,7 @@ function renderSources(
 ): void {
     if (!results.length) return;
     const sources = answerEl.createDiv({ cls: "nm-sources" });
-    sources.createEl("div", { cls: "nm-sources-title", text: "Sources" });
+    sources.createDiv({ cls: "nm-sources-title", text: "Sources" });
     results.forEach((result, index) => {
         const source = sources.createDiv({ cls: "nm-source nm-source-clickable" });
         source.setAttr("role", "button");
@@ -150,7 +150,7 @@ function wireCitationNavigation(answerEl: HTMLElement, citationMap?: Record<numb
         // tool's map; fall back to the citation number itself when no map
         // is available (the tool wasn't used, e.g. old test data).
         const resultIndex = citationMap?.[citationNumber] ?? citationNumber - 1;
-        const source = answerEl.querySelector(`[data-source-index="${resultIndex}"]`) as HTMLElement | null;
+        const source = answerEl.querySelector(`[data-source-index="${resultIndex}"]`);
         if (!source) return;
         source.scrollIntoView({ behavior: "smooth", block: "center" });
         source.addClass("nm-source-flash");

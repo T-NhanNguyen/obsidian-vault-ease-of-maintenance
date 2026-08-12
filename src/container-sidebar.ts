@@ -80,7 +80,7 @@ export class ReviewView extends ItemView {
     }
 
     async onOpen(): Promise<void> {
-        const state = this.leaf.getViewState().state as ReviewViewState | undefined;
+        const state = this.leaf.getViewState().state;
         if (state?.spec) this.spec = state.spec;
         this.contentEl.addClass("nm-review");
         // setViewState on an existing leaf can re-run onOpen — do not
@@ -212,7 +212,7 @@ export async function openReviewInSidebar(app: App, spec: ReviewSpec): Promise<v
         return;
     }
     await leaf.setViewState({ type: REVIEW_VIEW_TYPE, active: true, state: { spec } });
-    app.workspace.revealLeaf(leaf);
+    void app.workspace.revealLeaf(leaf);
     const view = leaf.view;
     if (view instanceof ReviewView) {
         await view.setSpec(spec);

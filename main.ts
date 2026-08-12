@@ -14,7 +14,6 @@ import {
   runTriage,
   runBuild,
   runChatQuery,
-  SortResult,
   ProposedChange,
 } from "./src/agent/runtime";
 import { resetRegistry } from "./src/agent/tools";
@@ -73,7 +72,7 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("Vault Maintenance").setHeading();
+    new Setting(containerEl).setName("Vault maintenance").setHeading();
 
     new Setting(containerEl)
       .setName("Review container")
@@ -90,10 +89,10 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("API Key")
-      .setDesc("API key for OpenAI / OpenRouter / local LLM. Leave empty to use env vars.")
+      .setName("API key")
+      .setDesc("API key for OpenAI / openrouter / local LLM. Leave empty to use env vars.")
       .addText(text => text
-        .setPlaceholder("sk-...")
+        .setPlaceholder("Sk-...")
         .setValue(this.plugin.pluginSettings.apiKey)
         .onChange(async (value) => {
           this.plugin.pluginSettings.apiKey = value.trim();
@@ -102,9 +101,10 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("API Base URL")
+      .setName("API base URL")
       .setDesc("Base URL for the OpenAI-compatible API.")
       .addText(text => text
+        // kept lowercase — case-sensitive value; the sentence-case transform would corrupt it
         .setPlaceholder("https://api.openai.com/v1")
         .setValue(this.plugin.pluginSettings.apiBaseUrl)
         .onChange(async (value) => {
@@ -114,9 +114,10 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Agent Model")
+      .setName("Agent model")
       .setDesc("Model for cleanup, sort, and chat agents.")
       .addText(text => text
+        // kept lowercase — case-sensitive value; the sentence-case transform would corrupt it
         .setPlaceholder("gpt-4o-mini")
         .setValue(this.plugin.pluginSettings.agentModel)
         .onChange(async (value) => {
@@ -126,9 +127,10 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Embedding Model")
+      .setName("Embedding model")
       .setDesc("Model for text embeddings.")
       .addText(text => text
+        // kept lowercase — case-sensitive value; the sentence-case transform would corrupt it
         .setPlaceholder("text-embedding-3-small")
         .setValue(this.plugin.pluginSettings.embeddingModel)
         .onChange(async (value) => {
@@ -138,10 +140,10 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName("Inbox Folder")
+      .setName("Inbox folder")
       .setDesc("Folder name for inbox triage (leave empty for auto-discover).")
       .addText(text => text
-        .setPlaceholder("inbox")
+        .setPlaceholder("Inbox")
         .setValue(this.plugin.pluginSettings.inboxFolder)
         .onChange(async (value) => {
           this.plugin.pluginSettings.inboxFolder = value.trim();
@@ -164,7 +166,7 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Manifest Filename")
+      .setName("Manifest filename")
       .setDesc("Name of the vault manifest file (default: _manifest.md).")
       .addText(text => text
         .setPlaceholder("_manifest.md")
@@ -247,7 +249,7 @@ export default class VaultMaintenancePlugin extends Plugin {
     // Commands
     this.addCommand({
       id: "build-index",
-      name: "Build GraphRAG index",
+      name: "Build graphrag index",
       callback: () => this.handleBuild(),
     });
 
@@ -341,7 +343,7 @@ export default class VaultMaintenancePlugin extends Plugin {
         return;
       }
 
-      const proposal = result as ProposedChange;
+      const proposal = result;
       if (!proposal.changed) {
         new Notice("No changes needed.");
         return;
@@ -370,7 +372,7 @@ export default class VaultMaintenancePlugin extends Plugin {
           }
           try {
             acceptProposal(filePath, proposal);
-            // eslint-disable-next-line @typescript-eslint/no-var-requires -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md)
+            // eslint-disable-next-line @typescript-eslint/no-require-imports -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md)
             const { basename } = require("path");
             return {
               ok: true,
@@ -401,7 +403,7 @@ export default class VaultMaintenancePlugin extends Plugin {
         return;
       }
 
-      const sortResult = result as SortResult;
+      const sortResult = result;
       const payload: SortResultPayload = {
         decisions: sortResult.decisions.map(d => ({
           unit_id: d.unitId,
@@ -447,11 +449,11 @@ export default class VaultMaintenancePlugin extends Plugin {
 // ---------------------------------------------------------------------------
 
 function acceptProposal(filePath: string, proposal: ProposedChange): void {
-  /* eslint-disable @typescript-eslint/no-var-requires -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
+  /* eslint-disable @typescript-eslint/no-require-imports -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
   const fs = require("fs");
   const crypto = require("crypto");
   const path = require("path");
-  /* eslint-enable @typescript-eslint/no-var-requires -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
+  /* eslint-enable @typescript-eslint/no-require-imports -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
 
   const absPath = path.join(settings.vaultPath, filePath);
 

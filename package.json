@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
+    "lint": "eslint main.ts \"src/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -16,8 +17,11 @@
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.0.0",
     "esbuild": "^0.28.1",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.1",
     "obsidian": "^1.5.0",
     "typescript": "^5.0.0",
+    "typescript-eslint": "^8.67.0",
     "vitest": "^3.2.7"
   }
 }
