@@ -7,6 +7,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { errorMessage } from "../errors";
+import type { EditOp } from "./tools";
 
 // ---------------------------------------------------------------------------
 // Constants — single source of truth
@@ -402,7 +403,7 @@ export class Validators {
   }
 
   static joinPunctuation(
-    ops: Array<Record<string, any>>,
+    ops: EditOp[],
     afterLines: string[],
   ): [boolean, string] {
     for (const op of ops) {
@@ -434,6 +435,18 @@ export interface JournalEntryData {
   reason?: string;
 }
 
+// JSONL row shape written by toJSON and read back by fromJSON.
+export interface JournalEntryRow {
+  unit_id: string;
+  idempotency_key: string;
+  source_handle: string;
+  state: string;
+  destination_handle?: string;
+  heading?: string;
+  receipt_id?: string;
+  reason?: string;
+}
+
 export class JournalEntry {
   constructor(
     public unitId: string,
@@ -459,7 +472,7 @@ export class JournalEntry {
     });
   }
 
-  static fromJSON(data: Record<string, any>): JournalEntry {
+  static fromJSON(data: JournalEntryRow): JournalEntry {
     return new JournalEntry(
       data.unit_id,
       data.idempotency_key,
@@ -490,7 +503,7 @@ export class Journal {
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed) {
-          this.entries.push(JournalEntry.fromJSON(JSON.parse(trimmed)));
+          this.entries.push(JournalEntry.fromJSON(JSON.parse(trimmed) as JournalEntryRow));
         }
       }
     }
@@ -653,7 +666,11 @@ export interface OperationContext {
 // EligibilityFilter — composable filter chain for placement candidates
 // ---------------------------------------------------------------------------
 
-export type ChunkMeta = Record<string, any>;
+export interface ChunkMeta {
+  handle?: string;
+  score?: number;
+  file_content_hash?: string;
+}
 
 export class EligibilityFilter {
   static excludeSelf(this: void, chunk: ChunkMeta, ctx: OperationContext, unitSourceHandle: string): string {
@@ -730,7 +747,7 @@ export function editDistance(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
   let prev = Array.from({ length: n + 1 }, (_, i) => i);
-  let curr = new Array(n + 1);
+  let curr = new Array<number>(n + 1);
 
   for (let i = 1; i <= m; i++) {
     curr[0] = i;
