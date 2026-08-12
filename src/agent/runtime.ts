@@ -5,6 +5,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { settings, INDEX_DB_SUFFIX } from "../config";
+import { errorMessage } from "../errors";
 import { LLMClient, Tool } from "./llm";
 import { buildChatContext, reconstructAnswer } from "./chat_context";
 import * as toolImpl from "./tools";
@@ -488,8 +489,8 @@ export async function runTriage(
       if (afterHash !== beforeHash) {
         throw new Error(`Sort authority violation: ${pathFor(h)} was modified during triage.`);
       }
-    } catch (e: any) {
-      if (e.message?.includes("authority violation")) throw e;
+    } catch (e) {
+      if (errorMessage(e).includes("authority violation")) throw e;
     }
   }
 
@@ -599,8 +600,8 @@ export async function runBuild(vaultPath: string): Promise<string> {
       manifestGenerated = true;
       const indexer2 = new Indexer(settings);
       await indexer2.build();
-    } catch (e: any) {
-      console.warn(`  [build] Manifest generation failed (${e.message}) — index remains degraded.`);
+    } catch (e) {
+      console.warn(`  [build] Manifest generation failed (${errorMessage(e)}) — index remains degraded.`);
     }
   }
 
@@ -699,8 +700,8 @@ export async function generateManifest(vaultPath: string): Promise<string> {
       null, 1,
     );
     purposes = parseLlmPurposes(response, new Set(sortedFolders));
-  } catch (e: any) {
-    console.warn(`  [manifest-gen] LLM synthesis failed (${e.message}) — using folder-name hints.`);
+  } catch (e) {
+    console.warn(`  [manifest-gen] LLM synthesis failed (${errorMessage(e)}) — using folder-name hints.`);
   }
 
   // Render §5.1 manifest
@@ -879,8 +880,8 @@ function loadManifestConstitution(): string {
       }
     }
     return lines.join("\n");
-  } catch (e: any) {
-    console.warn(`  [manifest] Error loading constitution: ${e.message}`);
+  } catch (e) {
+    console.warn(`  [manifest] Error loading constitution: ${errorMessage(e)}`);
     return "";
   }
 }
