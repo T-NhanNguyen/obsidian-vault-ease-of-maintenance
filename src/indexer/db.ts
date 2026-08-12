@@ -20,12 +20,12 @@ import { settings } from "../config";
 function resolveBetterSqlite3(): typeof Database {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- bare require keeps plain-Node dev/tests working
-    return require("better-sqlite3");
+    return require("better-sqlite3") as typeof Database;
   } catch (bareErr) {
     for (const candidate of collectCandidatePaths()) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports -- absolute-path fallback for Obsidian's loader (see TROUBLESHOOTING-NOTES.md)
-        return require(candidate);
+        return require(candidate) as typeof Database;
       } catch (e) {
         console.error(`[db] better-sqlite3 candidate failed: ${candidate} -> ${(e as Error).message}`);
       }
@@ -179,9 +179,9 @@ export class DatabaseManager {
 
     // Check existing tables
     const existing = new Set(
-      conn.prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      conn.prepare<[], NameOnlyRow>("SELECT name FROM sqlite_master WHERE type='table'")
         .all()
-        .map((r: any) => r.name)
+        .map((r) => r.name)
     );
 
     const v1Tables = new Set<string>();
@@ -190,8 +190,8 @@ export class DatabaseManager {
 
     // Check if FILES needs migration (missing file_id column)
     if (existing.has("FILES")) {
-      const cols = conn.prepare("PRAGMA table_info(FILES)").all()
-        .map((r: any) => r.name);
+      const cols = conn.prepare<[], NameOnlyRow>("PRAGMA table_info(FILES)").all()
+        .map((r) => r.name);
       if (!cols.includes("file_id")) {
         v1Tables.add("FILES");
         v1Tables.add("EDGES");
@@ -215,8 +215,8 @@ export class DatabaseManager {
   private ensureMigratedColumns(conn: Database.Database): void {
     for (const [table, columns] of Object.entries(MIGRATED_COLUMNS)) {
       const existing = new Set(
-        conn.prepare(`PRAGMA table_info(${table})`).all()
-          .map((r: any) => r.name)
+        conn.prepare<[], NameOnlyRow>(`PRAGMA table_info(${table})`).all()
+          .map((r) => r.name)
       );
       for (const col of columns) {
         if (!existing.has(col)) {
@@ -241,7 +241,7 @@ export class DatabaseManager {
   // File operations
   // ------------------------------------------------------------------
 
-  upsertFile(fileInfo: Record<string, any>): void {
+  upsertFile(fileInfo: FileWriteInput): void {
     const conn = this.connect();
     conn.prepare(`
       INSERT OR REPLACE INTO FILES
@@ -272,17 +272,18 @@ export class DatabaseManager {
       .run(rollup, fileId);
   }
 
-  hasFileChanged(fileInfo: Record<string, any>): boolean {
+  hasFileChanged(fileInfo: FileWriteInput): boolean {
     const conn = this.connect();
     const fileId = fileInfo.file_id || fileInfo.path || "";
-    const row = conn.prepare("SELECT content_hash FROM FILES WHERE file_id = ?")
-      .get(fileId) as any;
+    const row = conn.prepare<[string], { content_hash: string | null }>(
+      "SELECT content_hash FROM FILES WHERE file_id = ?"
+    ).get(fileId);
     return !row || row.content_hash !== fileInfo.content_hash;
   }
 
-  getFileInfo(filePath: string): Record<string, any> | null {
+  getFileInfo(filePath: string): FileRow | null {
     const conn = this.connect();
-    return conn.prepare("SELECT * FROM FILES WHERE file_id = ?").get(filePath) as any || null;
+    return conn.prepare<[string], FileRow>("SELECT * FROM FILES WHERE file_id = ?").get(filePath) || null;
   }
 
   removeFile(filePath: string): void {
@@ -310,7 +311,7 @@ export class DatabaseManager {
     return buf;
   }
 
-  upsertSection(section: Record<string, any>): string {
+  upsertSection(section: SectionWriteInput): string {
     const conn = this.connect();
     const emb = section.embedding;
     const embBlob = emb ? DatabaseManager.floatsToBlob(emb) : Buffer.alloc(0);
@@ -330,7 +331,7 @@ export class DatabaseManager {
       embBlob,
       section.contentHash || section.content_hash || "",
     );
-    return section.nodeKey;
+    return section.nodeKey || "";
   }
 
   retireSections(fileId: string): number {
@@ -345,17 +346,17 @@ export class DatabaseManager {
     return result.changes;
   }
 
-  getSectionsForFile(fileId: string): Record<string, any>[] {
+  getSectionsForFile(fileId: string): SectionRow[] {
     const conn = this.connect();
-    return conn.prepare("SELECT * FROM SECTIONS WHERE file_id = ?").all(fileId) as any[];
+    return conn.prepare<[string], SectionRow>("SELECT * FROM SECTIONS WHERE file_id = ?").all(fileId);
   }
 
-  getAllSections(): Record<string, any>[] {
+  getAllSections(): SectionSummary[] {
     const conn = this.connect();
-    const rows = conn.prepare(
+    const rows = conn.prepare<[], SectionEmbeddingRow>(
       "SELECT node_key, file_id, heading_path, text, embedding FROM SECTIONS WHERE embedding IS NOT NULL"
-    ).all() as any[];
-    return rows.map((row: any) => ({
+    ).all();
+    return rows.map((row) => ({
       nodeKey: row.node_key,
       fileId: row.file_id,
       headingPath: row.heading_path,
@@ -366,13 +367,13 @@ export class DatabaseManager {
 
   searchSimilar(queryEmbedding: number[], topK: number = 5): SearchResult[] {
     const conn = this.connect();
-    const rows = conn.prepare(`
+    const rows = conn.prepare<[], SearchRow>(`
       SELECT s.node_key, s.file_id, s.heading_path, s.heading_text,
              s.line_start, s.line_end, s.text, s.embedding, s.content_hash,
              f.path, f.title, f.content_type, f.rollup_summary, f.content_hash
       FROM SECTIONS s JOIN FILES f ON s.file_id = f.file_id
       WHERE s.embedding IS NOT NULL
-    `).all() as any[];
+    `).all();
 
     const results: [number, SearchResult][] = [];
     for (const row of rows) {
@@ -440,12 +441,12 @@ export class DatabaseManager {
     }
   }
 
-  getWikilinkEdges(fileId: string): Edge[] {
+  getWikilinkEdges(fileId: string): EdgeRow[] {
     const conn = this.connect();
-    return conn.prepare(
+    return conn.prepare<[string, string], EdgeRow>(
       `SELECT src_key, dst_key, kind, weight FROM EDGES
        WHERE kind IN ('wikilink', 'backlink') AND (src_key = ? OR src_key LIKE ?)`
-    ).all(fileId, `${fileId}::%`) as Edge[];
+    ).all(fileId, `${fileId}::%`);
   }
 
   deleteEdgesForFile(fileId: string): void {
@@ -455,9 +456,9 @@ export class DatabaseManager {
     ).run(fileId, `${fileId}::%`, fileId, `${fileId}::%`);
   }
 
-  getUnlinkedSections(): Record<string, any>[] {
+  getUnlinkedSections(): UnlinkedSection[] {
     const conn = this.connect();
-    const rows = conn.prepare(`
+    const rows = conn.prepare<[], UnlinkedSectionRow>(`
       SELECT s.node_key, s.file_id, s.embedding
       FROM SECTIONS s
       WHERE s.node_key NOT IN (
@@ -465,8 +466,8 @@ export class DatabaseManager {
         UNION
         SELECT dst_key FROM EDGES WHERE kind IN ('wikilink', 'backlink')
       )
-    `).all() as any[];
-    return rows.map((r: any) => ({
+    `).all();
+    return rows.map((r) => ({
       nodeKey: r.node_key,
       fileId: r.file_id,
       embedding: DatabaseManager.blobToFloats(r.embedding),
@@ -477,17 +478,17 @@ export class DatabaseManager {
   // Community operations
   // ------------------------------------------------------------------
 
-  insertCommunity(community: Record<string, any>): string {
+  insertCommunity(community: CommunityWriteInput): string {
     const conn = this.connect();
     conn.prepare(
       "INSERT OR REPLACE INTO COMMUNITIES (community_id, seed_source, label) VALUES (?, ?, ?)"
     ).run(community.communityId || community.community_id, community.seedSource || community.seed_source || "unsupervised", community.label || "");
-    return community.communityId || community.community_id;
+    return community.communityId || community.community_id || "";
   }
 
-  getAllCommunities(): Record<string, any>[] {
+  getAllCommunities(): CommunityRow[] {
     const conn = this.connect();
-    return conn.prepare("SELECT * FROM COMMUNITIES ORDER BY community_id").all() as any[];
+    return conn.prepare<[], CommunityRow>("SELECT * FROM COMMUNITIES ORDER BY community_id").all();
   }
 
   assignSectionToCommunity(sectionKey: string, communityId: string): void {
@@ -499,9 +500,9 @@ export class DatabaseManager {
 
   getCommunityForSection(sectionKey: string): string | null {
     const conn = this.connect();
-    const row = conn.prepare(
+    const row = conn.prepare<[string], { community_id: string }>(
       "SELECT community_id FROM COMMUNITY_SECTIONS WHERE section_key = ?"
-    ).get(sectionKey) as any;
+    ).get(sectionKey);
     return row ? row.community_id : null;
   }
 
@@ -523,11 +524,11 @@ export class DatabaseManager {
     return Number(result.lastInsertRowid);
   }
 
-  getLatestMeta(): Record<string, any> | null {
+  getLatestMeta(): MetaRow | null {
     const conn = this.connect();
-    return conn.prepare(
+    return conn.prepare<[], MetaRow>(
       "SELECT * FROM INDEX_META ORDER BY snapshot_id DESC LIMIT 1"
-    ).get() as any || null;
+    ).get() || null;
   }
 
   // ------------------------------------------------------------------
@@ -581,6 +582,148 @@ export class DatabaseManager {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+// Row interfaces for typed queries — better-sqlite3's .all()/.get() return
+// unknown, so every statement declares the shape it actually reads.
+interface NameOnlyRow {
+  name: string;
+}
+
+export interface FileRow {
+  file_id: string;
+  path: string;
+  title: string;
+  folder: string;
+  created_date: string | null;
+  modified_date: string | null;
+  reviewed_date: string | null;
+  owner: string;
+  content_type: string;
+  granularity: string;
+  version: number;
+  content_hash: string | null;
+  rollup_summary: string;
+}
+
+export interface SectionRow {
+  node_key: string;
+  file_id: string;
+  heading_path: string | null;
+  heading_text: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  text: string | null;
+  embedding: Buffer | null;
+  content_hash: string | null;
+}
+
+interface SectionEmbeddingRow {
+  node_key: string;
+  file_id: string;
+  heading_path: string | null;
+  text: string | null;
+  embedding: Buffer | null;
+}
+
+interface UnlinkedSectionRow {
+  node_key: string;
+  file_id: string;
+  embedding: Buffer | null;
+}
+
+interface SearchRow {
+  node_key: string;
+  file_id: string;
+  heading_path: string | null;
+  heading_text: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  text: string | null;
+  embedding: Buffer | null;
+  content_hash: string | null;
+  path: string;
+  title: string;
+  content_type: string;
+  rollup_summary: string;
+}
+
+export interface EdgeRow {
+  src_key: string;
+  dst_key: string;
+  kind: string;
+  weight: number;
+}
+
+interface CommunityRow {
+  community_id: string;
+  seed_source: string | null;
+  label: string | null;
+}
+
+interface MetaRow {
+  snapshot_id: number;
+  built_at: string;
+  vault_version: string;
+  manifest_hash: string | null;
+}
+
+// Write-input shapes — all-optional so Record<string, any> callers still
+// compile while db.ts reads are fully typed.
+interface FileWriteInput {
+  file_id?: string;
+  path?: string;
+  title?: string;
+  folder?: string;
+  created_date?: string | null;
+  // Scanner reports mtime as a number; the FILES column stores it as TEXT.
+  modified_date?: string | number | null;
+  reviewed_date?: string | null;
+  owner?: string;
+  content_type?: string;
+  granularity?: string;
+  version?: number;
+  content_hash?: string | null;
+  rollup_summary?: string;
+}
+
+interface SectionWriteInput {
+  nodeKey?: string;
+  fileId?: string;
+  headingPath?: string;
+  heading_path?: string;
+  headingText?: string;
+  heading_text?: string;
+  lineStart?: number;
+  line_start?: number;
+  lineEnd?: number;
+  line_end?: number;
+  text?: string;
+  contentHash?: string;
+  content_hash?: string;
+  embedding?: number[];
+}
+
+interface CommunityWriteInput {
+  communityId?: string;
+  community_id?: string;
+  seedSource?: string;
+  seed_source?: string;
+  label?: string;
+}
+
+export interface SectionSummary {
+  nodeKey: string;
+  fileId: string;
+  headingPath: string | null;
+  text: string | null;
+  embedding: number[] | null;
+}
+
+interface UnlinkedSection {
+  nodeKey: string;
+  fileId: string;
+  embedding: number[] | null;
+}
 
 export interface Edge {
   srcKey: string;
