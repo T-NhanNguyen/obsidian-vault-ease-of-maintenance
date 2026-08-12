@@ -5,6 +5,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { settings } from "../config";
+import { errorMessage } from "../errors";
 import {
   FileRegistry,
   Receipt,
@@ -74,8 +75,8 @@ export function fileStat(handle: string): string {
   try {
     const info = getRegistry().fileStat(handle);
     return `handle=${info.handle} path=${info.relative} size=${info.size} hash=${info.hash} lines=${info.lineCount}`;
-  } catch (e: any) {
-    return `STAT_ERROR: ${e.message}`;
+  } catch (e) {
+    return `STAT_ERROR: ${errorMessage(e)}`;
   }
 }
 
@@ -106,8 +107,8 @@ export async function searchIndex(query: string, topK: number = 5): Promise<stri
       );
     }
     return lines.join("\n");
-  } catch (e: any) {
-    return `SEARCH_ERROR: ${e.message}`;
+  } catch (e) {
+    return `SEARCH_ERROR: ${errorMessage(e)}`;
   }
 }
 
@@ -152,8 +153,8 @@ export function applyEdits(handle: string, ops: Array<Record<string, any>>): str
   let filePath: string;
   try {
     filePath = reg.resolve(handle);
-  } catch (e: any) {
-    return `RESOLVE_ERROR: ${e.message}`;
+  } catch (e) {
+    return `RESOLVE_ERROR: ${errorMessage(e)}`;
   }
 
   // Snapshot before
@@ -285,8 +286,8 @@ export function applyEditsImpl(handle: string, ops: Array<Record<string, any>>):
   let filePath: string;
   try {
     filePath = reg.resolve(handle);
-  } catch (e: any) {
-    return `RESOLVE_ERROR: ${e.message}`;
+  } catch (e) {
+    return `RESOLVE_ERROR: ${errorMessage(e)}`;
   }
 
   const before = Snapshot.take(filePath);
