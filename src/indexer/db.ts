@@ -21,8 +21,9 @@ function resolveBetterSqlite3(): typeof Database {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- bare require keeps plain-Node dev/tests working
     return require("better-sqlite3") as typeof Database;
-  } catch (bareErr) {
-    for (const candidate of collectCandidatePaths()) {
+  } catch {
+    const candidates = collectCandidatePaths();
+    for (const candidate of candidates) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports -- absolute-path fallback for Obsidian's loader (see TROUBLESHOOTING-NOTES.md)
         return require(candidate) as typeof Database;
@@ -33,7 +34,13 @@ function resolveBetterSqlite3(): typeof Database {
     console.error(
       `[db] better-sqlite3 resolution failed (vaultPath="${settings.vaultPath}", configDir="${settings.configDir}", pluginDir="${settings.pluginDir}")`
     );
-    throw bareErr instanceof Error ? bareErr : new Error(String(bareErr));
+    // Actionable message: the native module is not shipped with the release
+    // (main.js/manifest.json/styles.css only), so an install made without
+    // node_modules always lands here.
+    throw new Error(
+      `better-sqlite3 is missing from the plugin install. Tried: ${candidates.length > 0 ? candidates.join(", ") : "(no candidates — settings not wired)"}. ` +
+      `Copy node_modules into the plugin folder (./build-plugin.sh <vault-path>, or README step 5) and reload Obsidian.`
+    );
   }
 }
 

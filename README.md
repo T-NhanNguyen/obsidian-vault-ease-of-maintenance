@@ -38,7 +38,9 @@ If no `_manifest.md` exists, the plugin derives one from the index. Review it be
 
 1. Run `npm run build` in the repo root. This writes `main.js`.
 2. Create the folder `<vault>/.obsidian/plugins/obsidian-vault-ease-of-maintenance/`.
-3. Copy `main.js`, `manifest.json`, and `styles.css` into that folder.
+3. Copy `main.js`, `manifest.json`, `styles.css`, **and the `node_modules` folder** into that folder. The Build command needs `better-sqlite3` (the SQLite binding) and it is **not** shipped with the build — if it is missing, Build fails with
+   `Cannot find module 'better-sqlite3' (require stack: electron/js2c/renderer_init)`.
+   Easiest: run `./build-plugin.sh <vault-path>` — it builds and installs everything, including `node_modules`.
 4. Enable the plugin in Obsidian: Settings → Community Plugins.
 
 ## Commands
