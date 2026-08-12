@@ -281,7 +281,7 @@ export default class VaultMaintenancePlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const loaded = await this.loadData();
+    const loaded = (await this.loadData() ?? {}) as Partial<PluginSettings>;
     this.pluginSettings = Object.assign({}, DEFAULT_PLUGIN_SETTINGS, loaded);
   }
 
@@ -374,10 +374,10 @@ export default class VaultMaintenancePlugin extends Plugin {
           try {
             acceptProposal(filePath, proposal);
             // eslint-disable-next-line @typescript-eslint/no-require-imports -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md)
-            const { basename } = require("path");
+            const pathMod = require("path") as typeof import("path");
             return {
               ok: true,
-              message: `Accepted — ${basename(filePath)} written (backup at ${filePath}.bak).`,
+              message: `Accepted — ${pathMod.basename(filePath)} written (backup at ${filePath}.bak).`,
             };
           } catch (e) {
             return { ok: false, message: `Write failed: ${errorMessage(e)}` };
@@ -451,9 +451,9 @@ export default class VaultMaintenancePlugin extends Plugin {
 
 function acceptProposal(filePath: string, proposal: ProposedChange): void {
   /* eslint-disable @typescript-eslint/no-require-imports -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
-  const fs = require("fs");
-  const crypto = require("crypto");
-  const path = require("path");
+  const fs = require("fs") as typeof import("fs");
+  const crypto = require("crypto") as typeof import("crypto");
+  const path = require("path") as typeof import("path");
   /* eslint-enable @typescript-eslint/no-require-imports -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
 
   const absPath = path.join(settings.vaultPath, filePath);

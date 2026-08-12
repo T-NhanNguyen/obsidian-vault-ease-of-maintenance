@@ -34,14 +34,25 @@ async function search() {
 </body></html>`;
 }
 
-export function renderQueryResults(results: Array<Record<string, any>>): Array<Record<string, any>> {
+export interface QueryResult {
+  nodeKey: string;
+  filePath: string;
+  headingPath: string;
+  score: number;
+  text: string;
+  lineStart: number;
+  lineEnd: number;
+}
+
+// Rows arrive from either the DB (snake_case) or the chat API (camelCase).
+export function renderQueryResults(results: Array<Record<string, unknown>>): QueryResult[] {
   return results.map(r => ({
-    nodeKey: r.nodeKey || r.node_key || "",
-    filePath: r.filePath || r.file_path || r.fileId || r.file_id || "",
-    headingPath: r.headingPath || r.heading_path || "",
-    score: r.score || 0.0,
-    text: r.text || "",
-    lineStart: r.lineStart || r.line_start || 0,
-    lineEnd: r.lineEnd || r.line_end || 0,
+    nodeKey: (r.nodeKey || r.node_key || "") as string,
+    filePath: (r.filePath || r.file_path || r.fileId || r.file_id || "") as string,
+    headingPath: (r.headingPath || r.heading_path || "") as string,
+    score: Number(r.score || 0.0),
+    text: (r.text || "") as string,
+    lineStart: Number(r.lineStart || r.line_start || 0),
+    lineEnd: Number(r.lineEnd || r.line_end || 0),
   }));
 }

@@ -16,6 +16,13 @@ function configuredManifestFilename(): string {
 const TOC_HEADER = /^(#{1,6})\s+(.+?)\s*(?:<!--\s*(.*?)\s*-->)?\s*$/;
 const FILE_ENTRY = /^\s{4,}(.+?)\s*(?:<!--\s*(.*?)\s*-->)?\s*$/;
 
+// Serializable shape of a ManifestEntry (folder tree node).
+export interface ManifestEntryDict {
+  folder_path: string;
+  purpose: string;
+  children: ManifestEntryDict[];
+}
+
 export interface ManifestFile {
   name: string;
   comment: string;
@@ -29,7 +36,7 @@ export class ManifestEntry {
     public files: ManifestFile[] = [],
   ) {}
 
-  toDict(): Record<string, any> {
+  toDict(): ManifestEntryDict {
     return {
       folder_path: this.folderPath,
       purpose: this.purpose,

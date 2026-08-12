@@ -59,7 +59,7 @@ export class Embedder implements IEmbedder {
   async embed(text: string): Promise<number[]> {
     const textClean = text.replace(/\n/g, " ").trim();
     if (!textClean) {
-      return new Array(this.dimensions).fill(0.0);
+      return new Array<number>(this.dimensions).fill(0.0);
     }
     return (await this.postEmbeddings([textClean]))[0];
   }

@@ -1,3 +1,4 @@
+import type { ChatMessage } from "./llm_client";
 // Chat context assembly.
 //
 // Numbers the retrieved sources ([1], [2], …) directly in the context so the
@@ -18,7 +19,7 @@ export function buildChatContext(results: ChatQueryResult[]): string {
 // After a tool-calling chat loop the answer may be split across several
 // assistant messages (partial text, tool call, continuation).  This joins
 // every assistant content fragment into the full answer.
-export function reconstructAnswer(history: Array<Record<string, any>>): string {
+export function reconstructAnswer(history: ChatMessage[]): string {
   const parts: string[] = [];
   for (const msg of history) {
     if (msg.role === "assistant" && msg.content) {

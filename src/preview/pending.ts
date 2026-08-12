@@ -29,9 +29,23 @@ export interface ProposedChange {
   changed: boolean;
 }
 
+// meta.json shape written by create() and read back by resolve/sweep/list.
+export interface PendingMeta {
+  pending_id: string;
+  file_path: string;
+  vault_path: string;
+  user: string;
+  created_at: string;
+  ttl_minutes: number;
+  before_hash: string;
+  ops_applied: number;
+  ops_rejected: number;
+  validation: { passed: boolean; checks: Record<string, string> };
+}
+
 export interface PendingEntry {
   pendingId: string;
-  meta: Record<string, any>;
+  meta: PendingMeta;
   original: string;
   cleaned: string;
   dirPath: string;
@@ -143,7 +157,7 @@ export class PendingStore {
       throw new UnknownPending(pendingId);
     }
 
-    const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+    const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as PendingMeta;
     const originalFile = path.join(entryDir, "original.md");
     const cleanedFile = path.join(entryDir, "cleaned.md");
 
@@ -247,7 +261,7 @@ export class PendingStore {
       }
 
       try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as PendingMeta;
         const created = meta.created_at || "";
         if (!created) {
           fs.rmSync(entryDir, { recursive: true, force: true });
@@ -267,8 +281,8 @@ export class PendingStore {
     return count;
   }
 
-  listByUser(user: string): Array<Record<string, any>> {
-    const results: Array<Record<string, any>> = [];
+  listByUser(user: string): PendingMeta[] {
+    const results: PendingMeta[] = [];
     if (!fs.existsSync(this.root)) return results;
 
     for (const entryName of fs.readdirSync(this.root)) {
@@ -279,7 +293,7 @@ export class PendingStore {
       if (!fs.existsSync(metaPath)) continue;
 
       try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as PendingMeta;
         if (meta.user !== user) continue;
 
         if (this.isExpired(meta)) continue;
@@ -305,7 +319,7 @@ export class PendingStore {
       if (!fs.existsSync(metaPath)) continue;
 
       try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8"));
+        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as PendingMeta;
         if (meta.file_path === filePath && meta.user === user) {
           found.push(meta.pending_id);
         }
@@ -314,7 +328,7 @@ export class PendingStore {
     return found;
   }
 
-  private isExpired(meta: Record<string, any>): boolean {
+  private isExpired(meta: PendingMeta): boolean {
     const created = meta.created_at || "";
     const ttl = meta.ttl_minutes || this.ttlMinutes;
     if (!created) return true;

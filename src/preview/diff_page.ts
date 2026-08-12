@@ -2,16 +2,16 @@
 // Ported from src/preview/diff_page.py
 // For Path C (all-in-plugin), this produces HTML strings usable in Obsidian views.
 
-export function renderValidationBanner(validation: Record<string, any>): string {
+export function renderValidationBanner(validation: Record<string, unknown>): string {
   const passed = validation.passed !== false;
-  const checks = validation.checks || {};
+  const checks = (validation.checks || {}) as Record<string, string>;
 
   if (passed) {
     return '<div class="banner banner-pass">All validators passed — review the diff below.</div>';
   }
 
   const items = Object.entries(checks)
-    .filter(([k, v]) => !(v as string).startsWith(k + ": pass"))
+    .filter(([k, v]) => !v.startsWith(k + ": pass"))
     .map(([k, v]) => `<li><strong>${k}</strong>: ${String(v)}</li>`);
 
   if (items.length === 0) {
@@ -51,7 +51,7 @@ export function renderDiffPageFromProposal(
   filePath: string,
   original: string,
   cleaned: string,
-  validation: Record<string, any>,
+  validation: Record<string, unknown>,
   pendingId: string,
 ): string {
   const banner = renderValidationBanner(validation);
