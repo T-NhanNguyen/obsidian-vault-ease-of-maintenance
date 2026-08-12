@@ -3,26 +3,24 @@
 
 import { settings, resolveApiKey } from "../config";
 import { errorMessage } from "../errors";
-import { getLlmClient, detectProvider, type ILlmClient } from "./llm_client";
+import { getLlmClient, detectProvider, type ILlmClient, type ChatMessage, type ChatTool } from "./llm_client";
 
 // ---------------------------------------------------------------------------
 // Tool definition
 // ---------------------------------------------------------------------------
 
-export interface ToolFn {
-  (...args: any[]): string;
-}
+export type ToolFn = (...args: unknown[]) => string;
 
 export class Tool {
   name: string;
   description: string;
-  parameters: Record<string, any>;
+  parameters: Record<string, unknown>;
   fn: ToolFn;
 
   constructor(
     name: string,
     description: string,
-    parameters: Record<string, any>,
+    parameters: Record<string, unknown>,
     fn: ToolFn,
   ) {
     this.name = name;
@@ -31,7 +29,7 @@ export class Tool {
     this.fn = fn;
   }
 
-  toOpenAiTool(): Record<string, any> {
+  toOpenAiTool(): ChatTool {
     return {
       type: "function",
       function: {
@@ -42,7 +40,7 @@ export class Tool {
     };
   }
 
-  call(...args: any[]): string {
+  call(...args: unknown[]): string {
     try {
       const result = this.fn(...args);
       return result != null ? String(result) : "(empty)";
@@ -73,8 +71,8 @@ export class LLMClient {
     user: string,
     tools: Tool[] | null = null,
     maxTurns: number = 10,
-  ): Promise<[string, Array<Record<string, any>>]> {
-    const messages: Array<Record<string, any>> = [
+  ): Promise<[string, ChatMessage[]]> {
+    const messages: ChatMessage[] = [
       { role: "system", content: system },
       { role: "user", content: user },
     ];
@@ -105,9 +103,9 @@ export class LLMClient {
         // Execute each tool
         for (const tc of toolCalls) {
           const fnName = tc.function.name;
-          let fnArgs: Record<string, any> = {};
+          let fnArgs: Record<string, unknown> = {};
           try {
-            fnArgs = JSON.parse(tc.function.arguments || "{}");
+            fnArgs = JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>;
           } catch {
             fnArgs = {};
           }
