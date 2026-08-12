@@ -8,6 +8,7 @@
 
 import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { updateSettings, settings, INDEX_DB_SUFFIX } from "./src/config";
+import { errorMessage } from "./src/errors";
 import { setHttpTransport } from "./src/http";
 import {
   runCleanup,
@@ -316,9 +317,9 @@ export default class VaultMaintenancePlugin extends Plugin {
       const result = await runBuild(vaultPath);
       notice.hide();
       new Notice(result);
-    } catch (e: any) {
+    } catch (e) {
       notice.hide();
-      new Notice(`Build failed: ${e.message}`);
+      new Notice(`Build failed: ${errorMessage(e)}`);
     }
   }
 
@@ -378,15 +379,15 @@ export default class VaultMaintenancePlugin extends Plugin {
               ok: true,
               message: `Accepted — ${basename(filePath)} written (backup at ${filePath}.bak).`,
             };
-          } catch (e: any) {
-            return { ok: false, message: `Write failed: ${e.message}` };
+          } catch (e) {
+            return { ok: false, message: `Write failed: ${errorMessage(e)}` };
           }
         },
       };
       this.openReview(spec);
-    } catch (e: any) {
+    } catch (e) {
       notice.hide();
-      new Notice(`Clean failed: ${e.message}`);
+      new Notice(`Clean failed: ${errorMessage(e)}`);
     }
   }
 
@@ -429,9 +430,9 @@ export default class VaultMaintenancePlugin extends Plugin {
         result: payload,
       };
       this.openReview(spec);
-    } catch (e: any) {
+    } catch (e) {
       notice.hide();
-      new Notice(`Sort failed: ${e.message}`);
+      new Notice(`Sort failed: ${errorMessage(e)}`);
     }
   }
 
