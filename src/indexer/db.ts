@@ -669,7 +669,7 @@ interface MetaRow {
 
 // Write-input shapes — all-optional so Record<string, any> callers still
 // compile while db.ts reads are fully typed.
-interface FileWriteInput {
+export interface FileWriteInput {
   file_id?: string;
   path?: string;
   title?: string;
@@ -686,7 +686,7 @@ interface FileWriteInput {
   rollup_summary?: string;
 }
 
-interface SectionWriteInput {
+export interface SectionWriteInput {
   nodeKey?: string;
   fileId?: string;
   headingPath?: string;

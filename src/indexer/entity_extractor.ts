@@ -18,8 +18,8 @@ export interface Edge {
 
 export interface SectionForEdge {
   nodeKey?: string;
-  text?: string;
-  embedding?: number[];
+  text?: string | null;
+  embedding?: number[] | null;
 }
 
 export class EntityExtractor {

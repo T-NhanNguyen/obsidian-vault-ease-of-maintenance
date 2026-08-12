@@ -6,12 +6,29 @@ import * as fs from "fs";
 import * as path from "path";
 import { settings, Settings } from "../config";
 import { parseIgnorePatterns } from "../agent/engine";
-import { Chunker, FileInfoForChunking } from "./chunker";
-import { DatabaseManager, Edge, SearchResult } from "./db";
+import { Chunker, SectionInfo } from "./chunker";
+import { DatabaseManager, Edge, FileWriteInput, SearchResult, SectionWriteInput } from "./db";
 import { Embedder, IEmbedder } from "./embedder";
 import { EntityExtractor } from "./entity_extractor";
 import { CommunitySeed, ManifestParser } from "./manifest";
-import { Scanner } from "./scanner";
+import { FileInfo, Scanner } from "./scanner";
+
+// Section passed around during indexing — superset of the shapes produced by
+// the chunker and read back from the DB (SectionSummary).
+interface IndexableSection {
+  nodeKey?: string;
+  fileId?: string;
+  headingPath?: string | null;
+  text?: string | null;
+  embedding?: number[] | null;
+}
+
+// Journal replay entry — journal rows written by the sort pipeline.
+interface JournalEntryRecord {
+  verdict?: string;
+  file_path?: string;
+  old_path?: string;
+}
 
 export class Indexer {
   settings: Settings;
@@ -69,7 +86,7 @@ export class Indexer {
     // Scan and index files
     const files = this.scanner.scan();
     const filePaths = new Set(files.map(f => f.path));
-    const allSections: Record<string, any>[] = [];
+    const allSections: SectionInfo[] = [];
 
     for (const fileInfo of files) {
       if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
@@ -119,7 +136,7 @@ export class Indexer {
       }
     }
 
-    const changedSections: Record<string, any>[] = [];
+    const changedSections: SectionInfo[] = [];
     for (const fileInfo of changed) {
       if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
       this.db.retireSections(fileInfo.path);
@@ -148,7 +165,7 @@ export class Indexer {
   // Journal replay
   // ------------------------------------------------------------------
 
-  async replayJournal(journalEntries: Array<Record<string, any>>): Promise<void> {
+  async replayJournal(journalEntries: JournalEntryRecord[]): Promise<void> {
     this.db.initialize();
     const manifestPath = this.manifestParser.findManifest();
     const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
@@ -202,10 +219,10 @@ export class Indexer {
   // ------------------------------------------------------------------
 
   private async indexFile(
-    fileInfo: Record<string, any>,
+    fileInfo: FileInfo & Partial<FileWriteInput>,
     filePaths: Set<string>,
     contentTypeDefaults: Record<string, string>,
-  ): Promise<Record<string, any>[]> {
+  ): Promise<SectionInfo[]> {
     const filePath = fileInfo.path;
     const folder = path.dirname(filePath);
 
@@ -235,11 +252,11 @@ export class Indexer {
     this.db.upsertFile(fileInfo);
 
     // Chunk into header sections
-    const sections = this.chunker.chunk(fileInfo as FileInfoForChunking);
+    const sections = this.chunker.chunk(fileInfo);
 
     for (const section of sections) {
       // Map to DB format
-      const dbSection: Record<string, any> = {
+      const dbSection: SectionWriteInput = {
         nodeKey: section.nodeKey,
         fileId: filePath,
         headingPath: section.headingPath,
@@ -289,7 +306,7 @@ export class Indexer {
   }
 
   private async computeAllEdges(
-    allSections: Record<string, any>[],
+    allSections: IndexableSection[],
     filePaths: Set<string>,
   ): Promise<void> {
     const allEdges: Edge[] = [];
@@ -301,7 +318,7 @@ export class Indexer {
     };
 
     // Group sections by file
-    const fileSections = new Map<string, Record<string, any>[]>();
+    const fileSections = new Map<string, IndexableSection[]>();
     for (const s of allSections) {
       const fid = s.fileId || "";
       if (!fileSections.has(fid)) fileSections.set(fid, []);
@@ -329,7 +346,7 @@ export class Indexer {
     // Phase 3: Inferred edges
     if (allSections.length > 0) {
       const sectionsWithEmb = allSections.map(s => ({
-        nodeKey: s.nodeKey || s.node_key,
+        nodeKey: s.nodeKey || "",
         embedding: s.embedding,
       }));
       const inferred = this.entityExtractor.computeInferredEdges(
@@ -344,9 +361,9 @@ export class Indexer {
   }
 
   private async computeEdgesForFiles(
-    changedSections: Record<string, any>[],
+    changedSections: IndexableSection[],
     changedFileIds: Set<string>,
-    allSections: Record<string, any>[],
+    allSections: IndexableSection[],
     filePaths: Set<string>,
   ): Promise<void> {
     const allEdges: Edge[] = [];
@@ -357,7 +374,7 @@ export class Indexer {
       return filePaths.has(base);
     };
 
-    const fileSections = new Map<string, Record<string, any>[]>();
+    const fileSections = new Map<string, IndexableSection[]>();
     for (const s of allSections) {
       const fid = s.fileId || "";
       if (changedFileIds.has(fid)) {
@@ -386,7 +403,7 @@ export class Indexer {
   }
 
   private assignCommunities(
-    sections: Record<string, any>[],
+    sections: IndexableSection[],
     seeds: CommunitySeed[],
     seedEmbeddings: Map<string, number[]>,
   ): void {
@@ -410,7 +427,7 @@ export class Indexer {
 
       if (bestCommunity) {
         this.db.assignSectionToCommunity(
-          section.nodeKey || section.node_key, bestCommunity
+          section.nodeKey || "", bestCommunity
         );
       }
     }
@@ -429,7 +446,7 @@ export class Indexer {
     return result;
   }
 
-  readFileInfo(filePath: string): Record<string, any> | null {
+  readFileInfo(filePath: string): (FileInfo & Partial<FileWriteInput>) | null {
     const fullPath = path.join(this.settings.vaultPath, filePath);
     if (!fs.existsSync(fullPath)) return null;
     try {
