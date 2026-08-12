@@ -6,6 +6,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { errorMessage } from "../errors";
 
 // ---------------------------------------------------------------------------
 // Constants — single source of truth
@@ -64,8 +65,8 @@ export class FileRegistry {
         lines.push(`  ${entry.handle}  ${name}${suffix}`);
       }
       return lines.join("\n");
-    } catch (e: any) {
-      return `LIST_ERROR: ${e.message}`;
+    } catch (e) {
+      return `LIST_ERROR: ${errorMessage(e)}`;
     }
   }
 
@@ -153,8 +154,8 @@ export class FileRegistry {
         result.push(`${String(i + 1).padStart(5)}: ${lines[i]}`);
       }
       return result.join("\n");
-    } catch (e: any) {
-      return `READ_ERROR: ${e.message}`;
+    } catch (e) {
+      return `READ_ERROR: ${errorMessage(e)}`;
     }
   }
 
@@ -277,8 +278,8 @@ export class FileRegistry {
           lines.push(`  ${h}  ${name}`);
         }
       }
-    } catch (e: any) {
-      lines.push(`  (error reading: ${e.message})`);
+    } catch (e) {
+      lines.push(`  (error reading: ${errorMessage(e)})`);
     }
     return lines.join("\n");
   }
@@ -673,8 +674,8 @@ export class EligibilityFilter {
     try {
       ctx.registry.resolve(chunkHandle);
       return ELIGIBLE;
-    } catch (e: any) {
-      if (e.message?.includes("OUT_OF_SCOPE")) return EXCLUDED;
+    } catch (e) {
+      if (errorMessage(e).includes("OUT_OF_SCOPE")) return EXCLUDED;
       return ELIGIBLE;
     }
   }
