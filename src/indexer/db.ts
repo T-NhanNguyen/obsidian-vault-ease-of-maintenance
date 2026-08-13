@@ -47,10 +47,12 @@ function resolveBetterSqlite3(): typeof Database {
 export function collectCandidatePaths(): string[] {
   const candidates = new Set<string>();
   const vault = settings.vaultPath;
-  // configDir is set at onload; the literal is only a safety net for direct
-  // DB use outside the plugin (e.g. scripts) where settings were never wired.
-  const configDir = settings.configDir || ".obsidian";
-  if (vault) {
+  const configDir = settings.configDir;
+  // configDir comes from Vault#configDir at onload (never hardcoded — the
+  // config folder is user-configurable). When settings were never wired
+  // (plain-Node scripts), the vault scan is skipped and resolveBetterSqlite3()
+  // reports "settings not wired" instead of guessing at a path.
+  if (vault && configDir) {
     if (settings.pluginDir) {
       candidates.add(path.join(vault, configDir, settings.pluginDir, "node_modules", "better-sqlite3"));
     }

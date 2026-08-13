@@ -2,15 +2,13 @@
 // Ported from src/indexer/embedder.py
 
 import { settings, resolveApiKey } from "../config";
-import { postJson } from "../http";
+import { postJsonViaRequestUrl } from "../http";
 
 // Interface for pluggable embedders (real API + deterministic test fake)
 export interface IEmbedder {
   embed(text: string): Promise<number[]>;
   embedBatch(texts: string[]): Promise<number[][]>;
 }
-
-const EMBED_REQUEST_TIMEOUT = 120_000; // ms
 
 export class Embedder implements IEmbedder {
   private model: string;
@@ -36,14 +34,13 @@ export class Embedder implements IEmbedder {
   }
 
   private async postEmbeddings(texts: string[]): Promise<number[][]> {
-    const result = await postJson(
+    const result = await postJsonViaRequestUrl(
       `${this.apiBase}/embeddings`,
       {
         "Authorization": `Bearer ${this.getApiKey()}`,
         "Content-Type": "application/json",
       },
       { model: this.model, input: texts },
-      EMBED_REQUEST_TIMEOUT,
     );
 
     if (!result.ok) {

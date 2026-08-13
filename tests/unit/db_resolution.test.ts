@@ -60,4 +60,14 @@ describe("collectCandidatePaths", () => {
     expect(paths.some(p => p.includes("ease-of-maintenance"))).toBe(true);
     updateSettings({ pluginDir: "plugins/obsidian-vault-ease-of-maintenance" });
   });
+
+  it("never guesses a hardcoded .obsidian path when configDir is unwired", () => {
+    // The .obsidian literal fallback was removed: configDir must come from
+    // Vault#configDir (wired at onload). With settings unwired, the vault
+    // scan is skipped instead of silently assuming a default config folder.
+    updateSettings({ configDir: "" });
+    const paths = collectCandidatePaths();
+    expect(paths.some(p => p.includes(".obsidian"))).toBe(false);
+    updateSettings({ configDir: ".obsidian" });
+  });
 });

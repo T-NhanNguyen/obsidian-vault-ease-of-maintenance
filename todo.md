@@ -23,7 +23,7 @@ Chose **bump 1.5.0 → 1.7.2** over swapping `revealLeaf` → `setActiveLeaf`. A
 ## B. Real correctness/value
 
 - [x] `src/indexer/db.ts` — hardcoded `.obsidian` + PLUGIN_ID landmine fixed: `settings.configDir` + `settings.pluginDir` (from `app.vault.configDir` + `this.manifest.dir`, set in main.ts onload) replace the `.obsidian/plugins/obsidian-vault-ease-of-maintenance` literal; PLUGIN_ID constant deleted. Landmine killed: release/BRAT installs (folder = manifest id `ease-of-maintenance`) now resolve better-sqlite3 correctly
-- [x] `fetch` → `requestUrl` seam: new `src/http.ts` (`postJson`, `setHttpTransport`); plugin switches to `requestUrl` at onload; vitest stays on fetch via `tests/fixtures/obsidian_stub.ts` alias; `main.ts` vault path now via typed `FileSystemAdapter.getBasePath()` (any-cast removed)
+- [x] `fetch` → `requestUrl` seam: `src/http.ts` (`postJson`, `setHttpTransport`); plugin switches to `requestUrl` at onload; vitest stays on fetch via `tests/fixtures/obsidian_stub.ts` alias; `main.ts` vault path now via typed `FileSystemAdapter.getBasePath()` (any-cast removed). **Superseded 2026-08-12:** the seam was redesigned — two explicit transports `postJsonViaRequestUrl` (plugin) / `postJsonViaFetch` (injected fetch impl, plain-Node), no global mode switch; the last lint warnings went to 0. See [[dev/2026-08-12-lint-warning-elimination-3]]
 - [x] `setTimeout` → `window.setTimeout` (llm_client)
 - [x] New coverage: `tests/unit/http.test.ts` (fetch branch: 2xx body, non-2xx status, non-JSON null body, transport switching)
 

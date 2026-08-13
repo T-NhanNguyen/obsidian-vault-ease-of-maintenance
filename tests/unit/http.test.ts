@@ -1,9 +1,14 @@
-// Transport seam tests — exercises the fetch branch, the plain-Node default.
-// The requestUrl branch only runs inside Obsidian; the switch test below
-// proves the mode switch actually routes into it (via the stub, which throws).
+// Transport tests for the two explicit http.ts transports.
+//
+// postJsonViaFetch is the plain-Node path: the caller injects the fetch
+// implementation, so these tests stub globalThis.fetch and exercise the
+// shared parsing logic. postJsonViaRequestUrl is plugin-only — under vitest
+// the obsidian stub throws loudly, proving the function routes into the
+// requestUrl branch (and that plugin code cannot silently fall back to
+// plain fetch under tests).
 
 import { describe, it, expect, afterEach } from "vitest";
-import { postJson, setHttpTransport } from "../../src/http";
+import { postJsonViaFetch, postJsonViaRequestUrl } from "../../src/http";
 
 type FetchMock = (input: string, init?: { method?: string; body?: string }) => Promise<{
   status: number;
@@ -20,11 +25,10 @@ function stubFetch(handler: (input: string, init?: { method?: string; body?: str
 }
 
 afterEach(() => {
-  setHttpTransport("fetch");
   delete (globalThis as unknown as { fetch?: FetchMock }).fetch;
 });
 
-describe("postJson (fetch transport)", () => {
+describe("postJsonViaFetch", () => {
   it("posts JSON and returns the parsed body on 2xx", async () => {
     let capturedInit: { method?: string; body?: string } | undefined;
     stubFetch(async (input, init) => {
@@ -33,7 +37,13 @@ describe("postJson (fetch transport)", () => {
       return { status: 200, ok: true, json: async () => ({ ok: true }) };
     });
 
-    const result = await postJson("http://example.test/v1", { "X-Test": "1" }, { hello: "world" }, 5000);
+    const result = await postJsonViaFetch(
+      globalThis.fetch,
+      "http://example.test/v1",
+      { "X-Test": "1" },
+      { hello: "world" },
+      5000,
+    );
 
     expect(capturedInit?.method).toBe("POST");
     expect(JSON.parse(capturedInit?.body || "{}")).toEqual({ hello: "world" });
@@ -45,7 +55,7 @@ describe("postJson (fetch transport)", () => {
   it("marks non-2xx responses as not ok and keeps the status", async () => {
     stubFetch(async () => ({ status: 503, ok: false, json: async () => ({ error: "loading" }) }));
 
-    const result = await postJson("http://example.test/v1", {}, {}, 5000);
+    const result = await postJsonViaFetch(globalThis.fetch, "http://example.test/v1", {}, {}, 5000);
 
     expect(result.ok).toBe(false);
     expect(result.status).toBe(503);
@@ -58,23 +68,18 @@ describe("postJson (fetch transport)", () => {
       json: async () => { throw new Error("invalid json"); },
     }));
 
-    const result = await postJson("http://example.test/v1", {}, {}, 5000);
+    const result = await postJsonViaFetch(globalThis.fetch, "http://example.test/v1", {}, {}, 5000);
 
     expect(result.ok).toBe(true);
     expect(result.body).toBeNull();
   });
 });
 
-describe("postJson transport switching", () => {
-  it("defaults to fetch and routes to requestUrl only when switched", async () => {
-    // Default mode: fetch branch is live.
-    stubFetch(async () => ({ status: 200, ok: true, json: async () => ({ via: "fetch" }) }));
-    const viaFetch = await postJson("http://example.test/v1", {}, {}, 5000);
-    expect(viaFetch.body).toEqual({ via: "fetch" });
-
-    // Switched mode: the plugin path is reached (stub throws a loud error).
-    setHttpTransport("requestUrl");
-    await expect(postJson("http://example.test/v1", {}, {}, 5000)).rejects.toThrow(
+describe("postJsonViaRequestUrl (plugin-only)", () => {
+  it("routes into requestUrl, which is unavailable under vitest (loud stub)", async () => {
+    // The obsidian stub's requestUrl throws; a silent fallback to plain fetch
+    // would fail this assertion instead — the transport boundary is real.
+    await expect(postJsonViaRequestUrl("http://example.test/v1", {}, {})).rejects.toThrow(
       /requestUrl branch is plugin-only/
     );
   });

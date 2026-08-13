@@ -7,9 +7,9 @@
 // a centered modal overlay — chosen in the plugin settings.
 
 import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import type { SettingDefinition, SettingDefinitionItem } from "obsidian";
 import { updateSettings, settings, INDEX_DB_SUFFIX } from "./src/config";
 import { errorMessage } from "./src/errors";
-import { setHttpTransport } from "./src/http";
 import {
   runCleanup,
   runTriage,
@@ -58,8 +58,98 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
 let reviewSeq = 0;
 
 // ---------------------------------------------------------------------------
-// Setting Tab
+// Setting Tab — metadata-driven dual-path rendering
 // ---------------------------------------------------------------------------
+// One SETTING_META table drives both rendering paths so the two surfaces
+// cannot drift: the declarative getSettingDefinitions() (Obsidian 1.13.0+
+// settings search) and the imperative display() (Obsidian < 1.13.0).
+
+interface SettingMeta {
+  kind: "text" | "textarea" | "dropdown";
+  key: keyof PluginSettings;
+  name: string;
+  desc: string;
+  placeholder?: string;
+  rows?: number;
+  options?: Record<string, string>;
+}
+
+const SETTING_META: SettingMeta[] = [
+  {
+    kind: "dropdown",
+    key: "reviewContainer",
+    name: "Review container",
+    desc: "Where clean/sort reviews and chat open: a docked sidebar pane or a centered modal overlay.",
+    options: { sidebar: "Sidebar pane", modal: "Modal overlay" },
+  },
+  {
+    kind: "text",
+    key: "apiKey",
+    name: "API key",
+    desc: "API key for OpenAI / openrouter / local LLM. Leave empty to use env vars.",
+    placeholder: "Sk-...",
+  },
+  {
+    kind: "text",
+    key: "apiBaseUrl",
+    name: "API base URL",
+    desc: "Base URL for the OpenAI-compatible API.",
+    placeholder: "https://api.openai.com/v1",
+  },
+  {
+    kind: "text",
+    key: "agentModel",
+    name: "Agent model",
+    desc: "Model for cleanup, sort, and chat agents.",
+    placeholder: "gpt-4o-mini",
+  },
+  {
+    kind: "text",
+    key: "embeddingModel",
+    name: "Embedding model",
+    desc: "Model for text embeddings.",
+    placeholder: "text-embedding-3-small",
+  },
+  {
+    kind: "text",
+    key: "inboxFolder",
+    name: "Inbox folder",
+    desc: "Folder name for inbox triage (leave empty for auto-discover).",
+    placeholder: "Inbox",
+  },
+  {
+    kind: "textarea",
+    key: "ignorePatterns",
+    name: "Ignore patterns",
+    desc: "One glob pattern per line. The plugin skips matching files and folders during indexing and sorting.",
+    placeholder: "archive/\n*.bak",
+    rows: 5,
+  },
+  {
+    kind: "text",
+    key: "manifestFilename",
+    name: "Manifest filename",
+    desc: "Name of the vault manifest file (default: _manifest.md).",
+    placeholder: "_manifest.md",
+  },
+];
+
+// Single write path for both renderers: normalize, store, persist, apply.
+function normalizeSettingValue(key: keyof PluginSettings, value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  switch (key) {
+    case "apiKey":
+    case "apiBaseUrl":
+    case "agentModel":
+    case "embeddingModel":
+    case "inboxFolder":
+      return value.trim();
+    case "manifestFilename":
+      return value.trim() || "_manifest.md";
+    default:
+      return value;
+  }
+}
 
 class VaultMaintenanceSettingTab extends PluginSettingTab {
   plugin: VaultMaintenancePlugin;
@@ -69,114 +159,110 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  // Obsidian < 1.13.0 rendering path (getSettingDefinitions is 1.13.0+).
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
 
     new Setting(containerEl).setName("Vault maintenance").setHeading();
 
-    new Setting(containerEl)
-      .setName("Review container")
-      .setDesc("Where clean/sort reviews and chat open: a docked sidebar pane or a centered modal overlay.")
-      .addDropdown((dropdown) =>
+    for (const meta of SETTING_META) {
+      this.renderImperativeSetting(containerEl, meta);
+    }
+  }
+
+  // Obsidian 1.13.0+ declarative path: renders the tab and indexes it for
+  // settings search (display() is skipped when this returns non-empty).
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {
+        type: "group",
+        heading: "Vault maintenance",
+        items: SETTING_META.map((meta) => this.toSettingDefinition(meta)),
+      },
+    ];
+  }
+
+  // Reads from pluginSettings (base class reads this.plugin.settings).
+  getControlValue(key: string): unknown {
+    return (this.plugin.pluginSettings as unknown as Record<string, unknown>)[key];
+  }
+
+  // Single write path for both renderers — normalize, store, persist, apply.
+  setControlValue(key: string, value: unknown): void {
+    const settingKey = key as keyof PluginSettings;
+    (this.plugin.pluginSettings as unknown as Record<string, unknown>)[settingKey] =
+      normalizeSettingValue(settingKey, value);
+    void this.plugin.saveSettings();
+    this.applySettings();
+  }
+
+  private renderImperativeSetting(containerEl: HTMLElement, meta: SettingMeta): void {
+    const setting = new Setting(containerEl).setName(meta.name).setDesc(meta.desc);
+    const currentValue = this.plugin.pluginSettings[meta.key];
+
+    if (meta.kind === "dropdown") {
+      setting.addDropdown((dropdown) => {
+        for (const [optionValue, optionLabel] of Object.entries(meta.options ?? {})) {
+          dropdown.addOption(optionValue, optionLabel);
+        }
         dropdown
-          .addOption("sidebar", "Sidebar pane")
-          .addOption("modal", "Modal overlay")
-          .setValue(this.plugin.pluginSettings.reviewContainer)
-          .onChange(async (value) => {
-            this.plugin.pluginSettings.reviewContainer = value as ReviewContainer;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("API key")
-      .setDesc("API key for OpenAI / openrouter / local LLM. Leave empty to use env vars.")
-      .addText(text => text
-        .setPlaceholder("Sk-...")
-        .setValue(this.plugin.pluginSettings.apiKey)
-        .onChange(async (value) => {
-          this.plugin.pluginSettings.apiKey = value.trim();
-          await this.plugin.saveSettings();
-          this.applySettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("API base URL")
-      .setDesc("Base URL for the OpenAI-compatible API.")
-      .addText(text => text
-        // kept lowercase — case-sensitive value; the sentence-case transform would corrupt it
-        .setPlaceholder("https://api.openai.com/v1")
-        .setValue(this.plugin.pluginSettings.apiBaseUrl)
-        .onChange(async (value) => {
-          this.plugin.pluginSettings.apiBaseUrl = value.trim();
-          await this.plugin.saveSettings();
-          this.applySettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Agent model")
-      .setDesc("Model for cleanup, sort, and chat agents.")
-      .addText(text => text
-        // kept lowercase — case-sensitive value; the sentence-case transform would corrupt it
-        .setPlaceholder("gpt-4o-mini")
-        .setValue(this.plugin.pluginSettings.agentModel)
-        .onChange(async (value) => {
-          this.plugin.pluginSettings.agentModel = value.trim();
-          await this.plugin.saveSettings();
-          this.applySettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Embedding model")
-      .setDesc("Model for text embeddings.")
-      .addText(text => text
-        // kept lowercase — case-sensitive value; the sentence-case transform would corrupt it
-        .setPlaceholder("text-embedding-3-small")
-        .setValue(this.plugin.pluginSettings.embeddingModel)
-        .onChange(async (value) => {
-          this.plugin.pluginSettings.embeddingModel = value.trim();
-          await this.plugin.saveSettings();
-          this.applySettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Inbox folder")
-      .setDesc("Folder name for inbox triage (leave empty for auto-discover).")
-      .addText(text => text
-        .setPlaceholder("Inbox")
-        .setValue(this.plugin.pluginSettings.inboxFolder)
-        .onChange(async (value) => {
-          this.plugin.pluginSettings.inboxFolder = value.trim();
-          await this.plugin.saveSettings();
-          this.applySettings();
-        }));
-
-    new Setting(containerEl)
-      .setName("Ignore patterns")
-      .setDesc("One glob pattern per line. The plugin skips matching files and folders during indexing and sorting.")
-      .addTextArea(text => {
-        text.setPlaceholder("archive/\n*.bak");
-        text.setValue(this.plugin.pluginSettings.ignorePatterns);
-        text.inputEl.rows = 5;
-        text.onChange(async (value) => {
-          this.plugin.pluginSettings.ignorePatterns = value;
-          await this.plugin.saveSettings();
-          this.applySettings();
-        });
+          .setValue(String(currentValue))
+          .onChange((newValue) => this.setControlValue(meta.key, newValue));
       });
+      return;
+    }
 
-    new Setting(containerEl)
-      .setName("Manifest filename")
-      .setDesc("Name of the vault manifest file (default: _manifest.md).")
-      .addText(text => text
-        .setPlaceholder("_manifest.md")
-        .setValue(this.plugin.pluginSettings.manifestFilename)
-        .onChange(async (value) => {
-          this.plugin.pluginSettings.manifestFilename = value.trim() || "_manifest.md";
-          await this.plugin.saveSettings();
-          this.applySettings();
-        }));
+    if (meta.kind === "textarea") {
+      setting.addTextArea((text) => {
+        text
+          .setPlaceholder(meta.placeholder ?? "")
+          .setValue(String(currentValue))
+          .onChange((newValue) => this.setControlValue(meta.key, newValue));
+        text.inputEl.rows = meta.rows ?? 3;
+      });
+      return;
+    }
+
+    setting.addText((text) => {
+      text
+        .setPlaceholder(meta.placeholder ?? "")
+        .setValue(String(currentValue))
+        .onChange((newValue) => this.setControlValue(meta.key, newValue));
+    });
+  }
+
+  private toSettingDefinition(meta: SettingMeta): SettingDefinition {
+    const base = { name: meta.name, desc: meta.desc };
+    if (meta.kind === "dropdown") {
+      return {
+        ...base,
+        control: {
+          type: "dropdown",
+          key: meta.key,
+          options: meta.options ?? {},
+        },
+      };
+    }
+    if (meta.kind === "textarea") {
+      return {
+        ...base,
+        control: {
+          type: "textarea",
+          key: meta.key,
+          placeholder: meta.placeholder,
+          rows: meta.rows,
+        },
+      };
+    }
+    return {
+      ...base,
+      control: {
+        type: "text",
+        key: meta.key,
+        placeholder: meta.placeholder,
+      },
+    };
   }
 
   applySettings(): void {
@@ -211,10 +297,6 @@ export default class VaultMaintenancePlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
-
-    // Obsidian's requestUrl is the network transport in the plugin (CORS-safe,
-    // proxy-aware); plain-Node dev/tests keep global fetch (src/http.ts).
-    setHttpTransport("requestUrl");
 
     // Set up global settings from plugin config
     const vaultPath = (this.app.vault.adapter as FileSystemAdapter).getBasePath();

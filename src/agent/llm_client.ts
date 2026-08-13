@@ -1,7 +1,7 @@
 // LLM client abstraction layer.
 // Provider-agnostic, fetch-based. Ported from src/agent/llm_client.py
 
-import { postJson } from "../http";
+import { postJsonViaRequestUrl } from "../http";
 import { errorMessage } from "../errors";
 
 // ---------------------------------------------------------------------------
@@ -96,7 +96,6 @@ export interface ILlmClient {
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TIMEOUT = 600_000; // ms
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_BACKOFF_BASE = 2;
 const OPENROUTER_DEFAULT_BASE = "https://openrouter.ai/api/v1";
@@ -215,7 +214,7 @@ async function postWithRetry(
 ): Promise<ChatResponse> {
   for (let attempt = 0; attempt < DEFAULT_MAX_RETRIES; attempt++) {
     try {
-      const result = await postJson(endpoint, headers, payload, DEFAULT_TIMEOUT);
+      const result = await postJsonViaRequestUrl(endpoint, headers, payload);
 
       if (opts.handle503 && result.status === 503) {
         const wait = Math.pow(DEFAULT_BACKOFF_BASE, attempt) * 5;

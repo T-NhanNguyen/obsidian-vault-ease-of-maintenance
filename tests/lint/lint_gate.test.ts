@@ -13,11 +13,16 @@
 // a ceiling that shrinks as the `any` debt is paid down — lower it whenever a
 // fix removes warnings, never raise it without a written justification in the
 // dev-vault.
+//
+// 2026-08-12: 6 → 0 — the last 3 intentional warnings (hardcoded config path,
+// fetch, getSettingDefinitions) were eliminated by design, along with the 3
+// sentence-case placeholders (settings UI is now metadata-driven). See
+// .dev-vault/design/lint-warning-elimination-3-design.md.
 
 import { describe, it, expect } from "vitest";
 import { ESLint } from "eslint";
 
-const WARNING_BUDGET = 6;
+const WARNING_BUDGET = 0;
 const LINT_TARGETS = ["main.ts", "src/**/*.ts"];
 
 function isBotDemoted(ruleId: string | null | undefined): boolean {
