@@ -1,10 +1,11 @@
 // PendingStore — filesystem-backed state for proposed changes awaiting review.
 // Ported from src/preview/pending.py
+// All disk access is confined to the vault via VaultIO (src/io/vault_io.ts).
 
 import * as crypto from "crypto";
-import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { VaultIO } from "../io/vault_io";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -88,14 +89,16 @@ export class PendingStore {
   vaultPath: string;
   root: string;
   ttlMinutes: number;
+  private io: VaultIO;
+  private rootRel: string;
 
   constructor(vaultPath: string, ttlMinutes: number = DEFAULT_TTL_MINUTES) {
     this.vaultPath = path.resolve(vaultPath);
+    this.io = new VaultIO(this.vaultPath);
+    this.rootRel = PENDING_DIRNAME;
     this.root = path.join(this.vaultPath, PENDING_DIRNAME);
     this.ttlMinutes = ttlMinutes;
-    if (!fs.existsSync(this.root)) {
-      fs.mkdirSync(this.root, { recursive: true });
-    }
+    this.io.mkdirp(this.rootRel);
   }
 
   // ------------------------------------------------------------------
@@ -112,8 +115,8 @@ export class PendingStore {
     }
 
     const pendingId = this.generateId(user);
-    const entryDir = path.join(this.root, pendingId);
-    fs.mkdirSync(entryDir, { recursive: true });
+    const entryRel = `${this.rootRel}/${pendingId}`;
+    this.io.mkdirp(entryRel);
 
     const validationPassed = Object.values(proposal.validation).every(v => v[0]);
     const checks: Record<string, string> = {};
@@ -134,11 +137,11 @@ export class PendingStore {
       validation: { passed: validationPassed, checks },
     };
 
-    this.writeAtomic(path.join(entryDir, "meta.json"), JSON.stringify(meta, null, 2));
-    this.writeAtomic(path.join(entryDir, "original.md"), proposal.original);
-    this.writeAtomic(path.join(entryDir, "cleaned.md"), proposal.cleaned);
+    this.writeAtomic(`${entryRel}/meta.json`, JSON.stringify(meta, null, 2));
+    this.writeAtomic(`${entryRel}/original.md`, proposal.original);
+    this.writeAtomic(`${entryRel}/cleaned.md`, proposal.cleaned);
     if (diffHtml) {
-      this.writeAtomic(path.join(entryDir, "diff.html"), diffHtml);
+      this.writeAtomic(`${entryRel}/diff.html`, diffHtml);
     }
 
     // Run sweep opportunistically
@@ -147,22 +150,22 @@ export class PendingStore {
   }
 
   resolve(pendingId: string): PendingEntry {
-    const entryDir = path.join(this.root, pendingId);
-    if (!fs.existsSync(entryDir) || !fs.statSync(entryDir).isDirectory()) {
+    const entryRel = `${this.rootRel}/${pendingId}`;
+    if (!this.io.isDirectory(entryRel)) {
       throw new UnknownPending(pendingId);
     }
 
-    const metaPath = path.join(entryDir, "meta.json");
-    if (!fs.existsSync(metaPath)) {
+    const metaRel = `${entryRel}/meta.json`;
+    if (!this.io.exists(metaRel)) {
       throw new UnknownPending(pendingId);
     }
 
-    const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as PendingMeta;
-    const originalFile = path.join(entryDir, "original.md");
-    const cleanedFile = path.join(entryDir, "cleaned.md");
+    const meta = JSON.parse(this.io.readText(metaRel)) as PendingMeta;
+    const originalRel = `${entryRel}/original.md`;
+    const cleanedRel = `${entryRel}/cleaned.md`;
 
-    const original = fs.existsSync(originalFile) ? fs.readFileSync(originalFile, "utf-8") : "";
-    const cleaned = fs.existsSync(cleanedFile) ? fs.readFileSync(cleanedFile, "utf-8") : "";
+    const original = this.io.exists(originalRel) ? this.io.readText(originalRel) : "";
+    const cleaned = this.io.exists(cleanedRel) ? this.io.readText(cleanedRel) : "";
 
     const expired = this.isExpired(meta);
 
@@ -175,7 +178,7 @@ export class PendingStore {
       meta,
       original,
       cleaned,
-      dirPath: entryDir,
+      dirPath: this.absFor(entryRel),
       filePath: meta.file_path,
       vaultPath: meta.vault_path,
       beforeHash: meta.before_hash,
@@ -185,38 +188,36 @@ export class PendingStore {
 
   accept(pendingId: string): AcceptResult {
     const entry = this.resolve(pendingId);
-    const target = path.join(entry.vaultPath, entry.filePath);
-    const bakPath = target + BAK_SUFFIX;
+    const targetRel = entry.filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    const bakRel = `${targetRel}${BAK_SUFFIX}`;
 
     // Check freshness
     let freshnessWarning = false;
-    if (fs.existsSync(target)) {
+    if (this.io.exists(targetRel)) {
       const currentHash = crypto.createHash("sha1")
-        .update(fs.readFileSync(target))
+        .update(this.io.readBinary(targetRel))
         .digest("hex")
         .slice(0, 12);
       freshnessWarning = currentHash !== entry.beforeHash;
     }
 
     // Atomic copy current → .bak
-    if (fs.existsSync(target)) {
+    if (this.io.exists(targetRel)) {
       let suffix = 0;
-      let tmpBak = `${bakPath}.tmp.${suffix}`;
-      while (fs.existsSync(tmpBak)) {
+      let tmpBak = `${bakRel}.tmp.${suffix}`;
+      while (this.io.exists(tmpBak)) {
         suffix += 1;
-        tmpBak = `${bakPath}.tmp.${suffix}`;
+        tmpBak = `${bakRel}.tmp.${suffix}`;
       }
-      fs.copyFileSync(target, tmpBak);
-      fs.renameSync(tmpBak, bakPath);
+      this.io.copy(targetRel, tmpBak);
+      this.io.rename(tmpBak, bakRel);
     }
 
     // Atomic write cleaned content
-    const tmpPath = path.join(path.dirname(target), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
-    fs.writeFileSync(tmpPath, entry.cleaned, "utf-8");
-    fs.renameSync(tmpPath, target);
+    this.io.writeTextAtomic(targetRel, entry.cleaned);
 
     // Delete pending directory
-    fs.rmSync(entry.dirPath, { recursive: true, force: true });
+    this.io.remove(`${this.rootRel}/${pendingId}`);
 
     let msg = `Accepted — ${path.basename(entry.filePath)} written`;
     if (freshnessWarning) {
@@ -228,7 +229,7 @@ export class PendingStore {
     return {
       pendingId,
       filePath: entry.filePath,
-      bakPath,
+      bakPath: this.absFor(bakRel),
       success: true,
       freshnessWarning,
       message: msg,
@@ -236,9 +237,9 @@ export class PendingStore {
   }
 
   reject(pendingId: string): void {
-    const entryDir = path.join(this.root, pendingId);
-    if (fs.existsSync(entryDir)) {
-      fs.rmSync(entryDir, { recursive: true, force: true });
+    const entryRel = `${this.rootRel}/${pendingId}`;
+    if (this.io.exists(entryRel)) {
+      this.io.remove(entryRel);
     }
   }
 
@@ -247,34 +248,33 @@ export class PendingStore {
     const now = Date.now();
     const ttlMs = this.ttlMinutes * 60 * 1000;
 
-    if (!fs.existsSync(this.root)) return 0;
+    if (!this.io.isDirectory(this.rootRel)) return 0;
 
-    for (const entryName of fs.readdirSync(this.root)) {
-      const entryDir = path.join(this.root, entryName);
-      if (!fs.statSync(entryDir).isDirectory()) continue;
-
-      const metaPath = path.join(entryDir, "meta.json");
-      if (!fs.existsSync(metaPath)) {
-        fs.rmSync(entryDir, { recursive: true, force: true });
+    const { dirs } = this.io.list(this.rootRel);
+    for (const entryName of dirs) {
+      const entryRel = `${this.rootRel}/${entryName}`;
+      const metaRel = `${entryRel}/meta.json`;
+      if (!this.io.exists(metaRel)) {
+        this.io.remove(entryRel);
         count += 1;
         continue;
       }
 
       try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as PendingMeta;
+        const meta = JSON.parse(this.io.readText(metaRel)) as PendingMeta;
         const created = meta.created_at || "";
         if (!created) {
-          fs.rmSync(entryDir, { recursive: true, force: true });
+          this.io.remove(entryRel);
           count += 1;
           continue;
         }
         const age = now - new Date(created).getTime();
         if (age > ttlMs) {
-          fs.rmSync(entryDir, { recursive: true, force: true });
+          this.io.remove(entryRel);
           count += 1;
         }
       } catch {
-        fs.rmSync(entryDir, { recursive: true, force: true });
+        this.io.remove(entryRel);
         count += 1;
       }
     }
@@ -283,17 +283,15 @@ export class PendingStore {
 
   listByUser(user: string): PendingMeta[] {
     const results: PendingMeta[] = [];
-    if (!fs.existsSync(this.root)) return results;
+    if (!this.io.isDirectory(this.rootRel)) return results;
 
-    for (const entryName of fs.readdirSync(this.root)) {
-      const entryDir = path.join(this.root, entryName);
-      if (!fs.statSync(entryDir).isDirectory()) continue;
-
-      const metaPath = path.join(entryDir, "meta.json");
-      if (!fs.existsSync(metaPath)) continue;
+    const { dirs } = this.io.list(this.rootRel);
+    for (const entryName of dirs) {
+      const metaRel = `${this.rootRel}/${entryName}/meta.json`;
+      if (!this.io.exists(metaRel)) continue;
 
       try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as PendingMeta;
+        const meta = JSON.parse(this.io.readText(metaRel)) as PendingMeta;
         if (meta.user !== user) continue;
 
         if (this.isExpired(meta)) continue;
@@ -309,17 +307,15 @@ export class PendingStore {
 
   private findEntriesForFile(filePath: string, user: string): string[] {
     const found: string[] = [];
-    if (!fs.existsSync(this.root)) return found;
+    if (!this.io.isDirectory(this.rootRel)) return found;
 
-    for (const entryName of fs.readdirSync(this.root)) {
-      const entryDir = path.join(this.root, entryName);
-      if (!fs.statSync(entryDir).isDirectory()) continue;
-
-      const metaPath = path.join(entryDir, "meta.json");
-      if (!fs.existsSync(metaPath)) continue;
+    const { dirs } = this.io.list(this.rootRel);
+    for (const entryName of dirs) {
+      const metaRel = `${this.rootRel}/${entryName}/meta.json`;
+      if (!this.io.exists(metaRel)) continue;
 
       try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as PendingMeta;
+        const meta = JSON.parse(this.io.readText(metaRel)) as PendingMeta;
         if (meta.file_path === filePath && meta.user === user) {
           found.push(meta.pending_id);
         }
@@ -349,10 +345,12 @@ export class PendingStore {
     return `p_${ts}_${rand}`;
   }
 
-  private writeAtomic(filePath: string, content: string): void {
-    const tmpPath = path.join(path.dirname(filePath), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
-    fs.writeFileSync(tmpPath, content, "utf-8");
-    fs.renameSync(tmpPath, filePath);
+  private writeAtomic(rel: string, content: string): void {
+    this.io.writeTextAtomic(rel, content);
+  }
+
+  private absFor(rel: string): string {
+    return this.io.absPath(rel);
   }
 
   private getUser(): string {

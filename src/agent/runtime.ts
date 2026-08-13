@@ -2,9 +2,9 @@
 // Ported from src/agent/runtime.py
 
 import * as crypto from "crypto";
-import * as fs from "fs";
 import * as path from "path";
 import { settings, INDEX_DB_SUFFIX } from "../config";
+import { VaultIO } from "../io/vault_io";
 import { errorMessage } from "../errors";
 import { LLMClient, Tool } from "./llm";
 import { buildChatContext, reconstructAnswer } from "./chat_context";
@@ -160,9 +160,12 @@ export async function runCleanup(
 
   const reg = toolImpl.getRegistry();
   const vault = reg.vaultRoot;
-  const absPath = path.isAbsolute(filePath) ? filePath : path.join(vault, filePath);
+  const io = reg.io;
+  const rel = path.isAbsolute(filePath)
+    ? path.relative(vault, filePath)
+    : filePath.replace(/\\/g, "/");
 
-  const original = fs.readFileSync(absPath, "utf-8");
+  const original = io.readText(rel);
   const beforeHash = crypto.createHash("sha1").update(original).digest("hex").slice(0, 12);
 
   const skill = loadSkill(CLEANUP_SKILL_FILENAME);
@@ -215,9 +218,7 @@ export async function runCleanup(
       }
 
       // Revert file to original
-      const tmpPath = path.join(path.dirname(absPath), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
-      fs.writeFileSync(tmpPath, original, "utf-8");
-      fs.renameSync(tmpPath, absPath);
+      io.writeTextAtomic(rel, original);
 
       return makeProposedChange(
         filePath, settings.vaultPath, original, cleaned,
@@ -231,8 +232,8 @@ export async function runCleanup(
           .map(([k, v]) => `  - ${k}: ${v}`)
           .join("\n");
         const warnings = `<!-- ⚠ Cleanup warnings:\n${fails}\n-->\n\n`;
-        prependToFile(absPath, warnings);
-        const afterContent = fs.readFileSync(absPath, "utf-8");
+        prependToFile(io, rel, warnings);
+        const afterContent = io.readText(rel);
         const afterHash = crypto.createHash("sha1").update(afterContent).digest("hex").slice(0, 12);
         return (
           `Cleanup complete (via apply_edits, with warnings).\n` +
@@ -299,9 +300,7 @@ export async function runCleanup(
   }
 
   // Legacy: write the file
-  const tmpPath = path.join(path.dirname(absPath), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
-  fs.writeFileSync(tmpPath, cleaned, "utf-8");
-  fs.renameSync(tmpPath, absPath);
+  io.writeTextAtomic(rel, cleaned);
 
   const allOk = Object.values(validation).every(v => v[0]);
   if (!allOk) {
@@ -310,7 +309,7 @@ export async function runCleanup(
       .map(([k, v]) => `  - ${k}: ${v[1]}`)
       .join("\n");
     const warnings = `<!-- ⚠ Cleanup warnings:\n${fails}\n-->\n\n`;
-    prependToFile(absPath, warnings);
+    prependToFile(io, rel, warnings);
   }
 
   return `Cleanup complete (full rewrite).\nSize: ${original.length} -> ${cleaned.length} bytes\nHash: ${beforeHash} -> ${crypto.createHash("sha1").update(cleaned).digest("hex").slice(0, 12)}${allOk ? "\nValidation: PASS" : "\nWarnings prepended to top of file."}`;
@@ -414,7 +413,8 @@ export async function runTriage(
   for (const h of inboxFiles) {
     try {
       const p = reg.resolve(h);
-      inboxSnapshot.set(h, crypto.createHash("sha1").update(fs.readFileSync(p)).digest("hex"));
+      const rel = path.relative(reg.vaultRoot, p);
+      inboxSnapshot.set(h, crypto.createHash("sha1").update(reg.io.readBinary(rel)).digest("hex"));
     } catch { /* skip */ }
   }
 
@@ -501,7 +501,8 @@ export async function runTriage(
   for (const [h, beforeHash] of inboxSnapshot) {
     try {
       const p = reg.resolve(h);
-      const afterHash = crypto.createHash("sha1").update(fs.readFileSync(p)).digest("hex");
+      const rel = path.relative(reg.vaultRoot, p);
+      const afterHash = crypto.createHash("sha1").update(reg.io.readBinary(rel)).digest("hex");
       if (afterHash !== beforeHash) {
         throw new Error(`Sort authority violation: ${pathFor(h)} was modified during triage.`);
       }
@@ -740,9 +741,10 @@ export async function generateManifest(vaultPath: string): Promise<string> {
 
   const manifestContent = lines.join("\n").trimEnd() + "\n";
   const manifestPath = path.join(vaultPath, settings.manifest.filename);
-  const tmpPath = path.join(vaultPath, `.tmp-${crypto.randomBytes(4).toString("hex")}`);
-  fs.writeFileSync(tmpPath, manifestContent, "utf-8");
-  fs.renameSync(tmpPath, manifestPath);
+  new VaultIO(vaultPath).writeTextAtomic(
+    settings.manifest.filename.replace(/\\/g, "/"),
+    manifestContent,
+  );
   return manifestPath;
 }
 
@@ -750,12 +752,9 @@ export async function generateManifest(vaultPath: string): Promise<string> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function prependToFile(filePath: string, prefix: string): void {
-  const original = fs.readFileSync(filePath, "utf-8");
-  const combined = prefix + original;
-  const tmpPath = path.join(path.dirname(filePath), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
-  fs.writeFileSync(tmpPath, combined, "utf-8");
-  fs.renameSync(tmpPath, filePath);
+function prependToFile(io: VaultIO, rel: string, prefix: string): void {
+  const original = io.readText(rel);
+  io.writeTextAtomic(rel, prefix + original);
 }
 
 function readDestContext(handle: string, heading: string, contextLines: number = 5): { before: string; after: string } {

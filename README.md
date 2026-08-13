@@ -90,6 +90,15 @@ See `config.example.yaml`. Key settings:
 
 Set the ignore patterns in the plugin Settings tab. The plugin skips matching files and folders during indexing and sorting. The format matches `.gitignore`.
 
+## Security model — vault confinement
+
+Every file operation in the plugin routes through one synchronous confinement layer, `src/io/vault_io.ts` (`VaultIO`). It accepts only vault-relative paths and enforces two guards before any I/O:
+
+1. **Path normalization** — absolute paths and parent (`..`) traversal are rejected.
+2. **Realpath verification** — the deepest existing ancestor of a target must resolve at-or-inside the vault root, which defeats symlink escapes (a symlink inside the vault pointing outside).
+
+The plugin writes only inside the vault: the index at `.note-maintainer/index.db`, pending reviews at `.note-maintainer/pending`, the sort journal at `.note-maintainer/sort-journal.jsonl`, `.bak` backups beside edited notes, and atomic `.tmp-*` files beside their targets. Plugin settings are stored by Obsidian via `loadData`. The only native module, `better-sqlite3`, opens the DB path inside the vault (verified via `VaultIO.absPath`); it is the documented exception.
+
 ## Important Files
 
 | Path | Role |
@@ -104,6 +113,7 @@ Set the ignore patterns in the plugin Settings tab. The plugin skips matching fi
 | `src/indexer/manifest.ts` | Parses `_manifest.md`. |
 | `src/indexer/indexer.ts` | Orchestrates the indexing pipeline. |
 | `src/agent/engine.ts` | Deterministic primitives: file registry, validators, journal, receipts. |
+| `src/io/vault_io.ts` | Vault-confined sync file layer — the only place `fs` appears. |
 | `src/agent/llm_client.ts` | API transport for local, OpenAI, and OpenRouter providers. |
 | `src/agent/llm.ts` | Chat loop with tool calling. |
 | `src/agent/tools.ts` | Agent tools, including `apply_edits`. |

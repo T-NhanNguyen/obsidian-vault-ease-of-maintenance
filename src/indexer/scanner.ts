@@ -1,10 +1,11 @@
 // Disk scanner — finds and reads markdown files in the vault.
 // Ported from src/indexer/scanner.py.
 // Ignore patterns come from the plugin Settings tab (parseIgnorePatterns).
+// All disk access is confined to the vault via VaultIO (src/io/vault_io.ts).
 
 import * as crypto from "crypto";
-import * as fs from "fs";
 import * as path from "path";
+import { VaultIO } from "../io/vault_io";
 import { isIgnored } from "../agent/engine";
 
 export interface FileInfo {
@@ -18,50 +19,43 @@ export interface FileInfo {
 }
 
 export class Scanner {
-  private vaultPath: string;
+  private io: VaultIO;
   private ignorePatterns: string[];
 
   constructor(vaultPath: string, ignorePatterns: string[] = []) {
-    this.vaultPath = vaultPath;
+    this.io = new VaultIO(vaultPath);
     this.ignorePatterns = ignorePatterns;
   }
 
   scan(): FileInfo[] {
     const files: FileInfo[] = [];
-    if (!fs.existsSync(this.vaultPath) || !fs.statSync(this.vaultPath).isDirectory()) {
+    if (!this.io.isDirectory("")) {
       return files;
     }
 
-    const walk = (dir: string): void => {
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
+    const walk = (relDir: string): void => {
+      const { files: fileNames, dirs: dirNames } = this.io.list(relDir);
 
       // Filter dirs: skip hidden dirs and ignored dirs
-      const dirs = entries.filter(e => {
-        if (!e.isDirectory()) return false;
-        if (e.name.startsWith(".")) return false;
-        const dPath = path.join(dir, e.name);
-        const rel = path.relative(this.vaultPath, dPath);
+      const dirs = dirNames.filter(name => {
+        if (name.startsWith(".")) return false;
+        const rel = relDir ? `${relDir}/${name}` : name;
         return !isIgnored(rel, this.ignorePatterns);
       });
 
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-        const fpath = path.join(dir, entry.name);
-        const relPath = path.relative(this.vaultPath, fpath);
+      for (const name of fileNames) {
+        if (!name.endsWith(".md")) continue;
+        const relPath = relDir ? `${relDir}/${name}` : name;
 
         if (isIgnored(relPath, this.ignorePatterns)) continue;
 
         try {
-          const stat = fs.statSync(fpath);
-          const content = fs.readFileSync(fpath);
+          const stat = this.io.stat(relPath);
+          if (!stat) continue;
+          const content = this.io.readBinary(relPath);
           files.push({
             path: relPath,
-            title: path.basename(entry.name, ".md"),
+            title: path.basename(name, ".md"),
             created_date: null,
             modified_date: stat.mtimeMs,
             version: 1,
@@ -74,11 +68,11 @@ export class Scanner {
       }
 
       for (const d of dirs) {
-        walk(path.join(dir, d.name));
+        walk(relDir ? `${relDir}/${d}` : d);
       }
     };
 
-    walk(this.vaultPath);
+    walk("");
     return files;
   }
 }

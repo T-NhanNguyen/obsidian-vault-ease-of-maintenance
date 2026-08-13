@@ -2,9 +2,9 @@
 // Ported from src/indexer/indexer.py
 
 import * as crypto from "crypto";
-import * as fs from "fs";
 import * as path from "path";
 import { settings, Settings } from "../config";
+import { VaultIO } from "../io/vault_io";
 import { parseIgnorePatterns } from "../agent/engine";
 import { Chunker, SectionInfo } from "./chunker";
 import { DatabaseManager, Edge, FileWriteInput, SearchResult, SectionWriteInput } from "./db";
@@ -38,9 +38,11 @@ export class Indexer {
   entityExtractor: EntityExtractor;
   embedder: IEmbedder;
   manifestParser: ManifestParser;
+  private io: VaultIO;
 
   constructor(customSettings?: Settings, embedder?: IEmbedder) {
     this.settings = customSettings || settings;
+    this.io = new VaultIO(this.settings.vaultPath);
     this.db = new DatabaseManager(this.settings.dbPath);
     this.db.initialize();
     this.scanner = new Scanner(this.settings.vaultPath, parseIgnorePatterns(this.settings.ignorePatterns));
@@ -447,16 +449,17 @@ export class Indexer {
   }
 
   readFileInfo(filePath: string): (FileInfo & Partial<FileWriteInput>) | null {
-    const fullPath = path.join(this.settings.vaultPath, filePath);
-    if (!fs.existsSync(fullPath)) return null;
+    const rel = filePath.replace(/\\/g, "/");
+    if (!this.io.exists(rel)) return null;
     try {
-      const stat = fs.statSync(fullPath);
-      const content = fs.readFileSync(fullPath);
+      const stat = this.io.stat(rel);
+      if (!stat) return null;
+      const content = this.io.readBinary(rel);
       return {
-        path: filePath,
-        file_id: filePath,
-        title: path.basename(filePath, ".md"),
-        folder: path.dirname(filePath),
+        path: rel,
+        file_id: rel,
+        title: path.basename(rel, ".md"),
+        folder: path.dirname(rel),
         created_date: null,
         modified_date: stat.mtimeMs,
         version: 1,

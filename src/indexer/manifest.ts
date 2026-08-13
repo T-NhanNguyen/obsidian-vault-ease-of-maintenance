@@ -2,8 +2,7 @@
 // Ported from src/indexer/manifest.py
 
 import * as crypto from "crypto";
-import * as fs from "fs";
-import * as path from "path";
+import { VaultIO } from "../io/vault_io";
 import { settings } from "../config";
 
 export const MANIFEST_FILENAME = "_manifest.md";
@@ -53,46 +52,42 @@ export class ManifestEntry {
 }
 
 export class TocReader {
-  private vaultPath: string;
+  private io: VaultIO;
   private manifestFilename: string;
   residue: string[] = [];
 
   constructor(vaultPath: string) {
-    this.vaultPath = vaultPath;
+    this.io = new VaultIO(vaultPath);
     this.manifestFilename = configuredManifestFilename();
   }
 
   findManifest(): string | null {
-    if (!fs.existsSync(this.vaultPath) || !fs.statSync(this.vaultPath).isDirectory()) {
+    if (!this.io.isDirectory("")) {
       return null;
     }
-    const walk = (dir: string): string | null => {
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return null;
+    const walk = (relDir: string): string | null => {
+      const { files, dirs } = this.io.list(relDir);
+      for (const name of files) {
+        if (name === this.manifestFilename) {
+          return relDir ? `${relDir}/${name}` : name;
+        }
       }
-      for (const entry of entries) {
-        if (entry.name === this.manifestFilename) {
-          return path.join(dir, entry.name);
-        }
-        if (entry.isDirectory() && !entry.name.startsWith(".")) {
-          const found = walk(path.join(dir, entry.name));
-          if (found) return found;
-        }
+      for (const name of dirs) {
+        if (name.startsWith(".")) continue;
+        const found = walk(relDir ? `${relDir}/${name}` : name);
+        if (found) return found;
       }
       return null;
     };
-    return walk(this.vaultPath);
+    return walk("");
   }
 
   parse(manifestPath?: string | null): ManifestEntry[] {
     if (!manifestPath) {
       manifestPath = this.findManifest();
     }
-    if (!manifestPath || !fs.existsSync(manifestPath)) return [];
-    const content = fs.readFileSync(manifestPath, "utf-8");
+    if (!manifestPath || !this.io.exists(manifestPath)) return [];
+    const content = this.io.readText(manifestPath);
     return this._parseContent(content);
   }
 
@@ -159,24 +154,24 @@ const INDENTED_ENTRY = /^\s*[│├└─]+\s*(.+?)$/;
 const FOLDER_ENTRY = /^\s*(?:\|?\s*├──\s*|│?\s*└──\s*|─+)?\s*([A-Za-z0-9_\-./\s]+?)(?:\s*\(([^)]*)\))?\s*$/;
 
 export class ManifestParser {
-  private vaultPath: string;
+  private io: VaultIO;
   private manifestFilename: string;
 
   constructor(vaultPath: string) {
-    this.vaultPath = vaultPath;
+    this.io = new VaultIO(vaultPath);
     this.manifestFilename = configuredManifestFilename();
   }
 
   findManifest(): string | null {
-    return new TocReader(this.vaultPath).findManifest();
+    return new TocReader(this.io.rootAbs).findManifest();
   }
 
   parse(manifestPath?: string | null): ManifestEntry[] {
     if (!manifestPath) {
       manifestPath = this.findManifest();
     }
-    if (!manifestPath || !fs.existsSync(manifestPath)) return [];
-    const content = fs.readFileSync(manifestPath, "utf-8");
+    if (!manifestPath || !this.io.exists(manifestPath)) return [];
+    const content = this.io.readText(manifestPath);
 
     // Detect §5.1 markdown-header TOC format
     const looksToc = content.split("\n").some(line =>
@@ -184,7 +179,7 @@ export class ManifestParser {
       /^#{2,6}\s+\S+.*\/\s*(?:<!--.*-->)?\s*$/.test(line)
     );
     if (looksToc) {
-      return new TocReader(this.vaultPath)._parseContent(content);
+      return new TocReader(this.io.rootAbs)._parseContent(content);
     }
 
     return this.parseLegacyContent(content);
@@ -260,8 +255,8 @@ export class ManifestParser {
 
   hashManifest(manifestPath?: string | null): string {
     if (!manifestPath) manifestPath = this.findManifest();
-    if (!manifestPath || !fs.existsSync(manifestPath)) return "";
-    const content = fs.readFileSync(manifestPath);
+    if (!manifestPath || !this.io.exists(manifestPath)) return "";
+    const content = this.io.readBinary(manifestPath);
     return crypto.createHash("sha1").update(content).digest("hex");
   }
 

@@ -3,9 +3,9 @@
 // Ported from src/agent/engine.py
 
 import * as crypto from "crypto";
-import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
+import { settings } from "../config";
+import { VaultIO } from "../io/vault_io";
 import { errorMessage } from "../errors";
 import type { EditOp } from "./tools";
 
@@ -34,13 +34,17 @@ export interface RegistryEntry {
 export class FileRegistry {
   vaultRoot: string;
   allowedPrefixes: string[] | null;
+  readonly io: VaultIO;
   private entries: Map<string, RegistryEntry> = new Map(); // handle → entry
   private pathToHandle: Map<string, string> = new Map(); // canonical path → handle
   private counter = 0;
   private ignorePatterns: string[];
 
   constructor(vaultRoot: string, allowedPrefixes: string[] | null = null, ignorePatterns: string[] = []) {
-    this.vaultRoot = path.resolve(vaultRoot);
+    this.io = new VaultIO(vaultRoot);
+    // Use the realpath'd root so registry paths and VaultIO guards agree
+    // (macOS /var → /private/var, etc.).
+    this.vaultRoot = this.io.rootAbs;
     this.allowedPrefixes = allowedPrefixes;
     this.ignorePatterns = ignorePatterns;
     this.build();
@@ -51,17 +55,18 @@ export class FileRegistry {
   // ------------------------------------------------------------------
 
   listFiles(relPath: string = ""): string {
-    const full = this.resolveRelative(relPath);
-    if (!fs.existsSync(full) || !fs.statSync(full).isDirectory()) {
+    const rel = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!this.io.isDirectory(rel)) {
       return `DIR_NOT_FOUND: ${relPath}`;
     }
     try {
       const lines = [`Contents of /${relPath || ""}:`];
-      const names = fs.readdirSync(full).sort();
+      const { files, dirs } = this.io.list(rel);
+      const names = [...files, ...dirs].sort();
       for (const name of names) {
-        const entryPath = path.join(full, name);
-        const isDir = fs.statSync(entryPath).isDirectory();
-        const entry = this.register(entryPath, isDir);
+        const isDir = dirs.includes(name);
+        const entryRel = rel ? `${rel}/${name}` : name;
+        const entry = this.register(path.join(this.vaultRoot, entryRel), isDir);
         const suffix = isDir ? "/" : "";
         lines.push(`  ${entry.handle}  ${name}${suffix}`);
       }
@@ -148,9 +153,10 @@ export class FileRegistry {
     const filePath = this.resolve(handle);
     this.checkScope(filePath);
     try {
-      const lines = fs.readFileSync(filePath, "utf-8").split("\n");
-      const rel = this.entryFor(filePath).relative;
-      const result = [`--- ${handle} (${rel}) ---`];
+      const rel = path.relative(this.vaultRoot, filePath);
+      const lines = this.io.readText(rel).split("\n");
+      const relLabel = this.entryFor(filePath).relative;
+      const result = [`--- ${handle} (${relLabel}) ---`];
       for (let i = 0; i < lines.length; i++) {
         result.push(`${String(i + 1).padStart(5)}: ${lines[i]}`);
       }
@@ -164,7 +170,8 @@ export class FileRegistry {
     const filePath = this.resolve(handle);
     this.checkScope(filePath);
     const entry = this.entryFor(filePath);
-    const content = fs.readFileSync(filePath);
+    const rel = path.relative(this.vaultRoot, filePath);
+    const content = this.io.readBinary(rel);
     return {
       handle: entry.handle,
       relative: entry.relative,
@@ -198,44 +205,33 @@ export class FileRegistry {
   // ------------------------------------------------------------------
 
   private build(): void {
-    const walk = (dir: string): void => {
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
+    const walk = (relDir: string): void => {
+      const { files, dirs } = this.io.list(relDir);
 
       // Filter hidden dirs and ignored dirs
-      const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith("."));
-      const files = entries.filter(e => e.isFile());
-
-      // Check ignore patterns for dirs
       const filteredDirs = dirs.filter(d => {
-        const dPath = path.join(dir, d.name);
-        const relPath = path.relative(this.vaultRoot, dPath);
-        return !isIgnored(relPath, this.ignorePatterns);
+        if (d.startsWith(".")) return false;
+        const rel = relDir ? `${relDir}/${d}` : d;
+        return !isIgnored(rel, this.ignorePatterns);
       });
 
       for (const d of filteredDirs) {
-        const dPath = path.join(dir, d.name);
-        this.register(dPath, true);
+        this.register(path.join(this.vaultRoot, relDir ? `${relDir}/${d}` : d), true);
       }
 
       for (const f of files) {
-        const fPath = path.join(dir, f.name);
-        const relPath = path.relative(this.vaultRoot, fPath);
-        if (isIgnored(relPath, this.ignorePatterns)) continue;
-        this.register(fPath, false);
+        const rel = relDir ? `${relDir}/${f}` : f;
+        if (isIgnored(rel, this.ignorePatterns)) continue;
+        this.register(path.join(this.vaultRoot, rel), false);
       }
 
       // Recurse into filtered dirs
       for (const d of filteredDirs) {
-        walk(path.join(dir, d.name));
+        walk(relDir ? `${relDir}/${d}` : d);
       }
     };
 
-    walk(this.vaultRoot);
+    walk("");
   }
 
   register(filePath: string, isDir: boolean = false): RegistryEntry {
@@ -257,25 +253,21 @@ export class FileRegistry {
     const h = this.pathToHandle.get(canon);
     if (h) return this.entries.get(h)!;
     // Lazily register if it exists on disk
-    if (fs.existsSync(canon)) {
-      return this.register(canon, fs.statSync(canon).isDirectory());
+    const rel = path.relative(this.vaultRoot, canon);
+    if (rel !== "" && !rel.startsWith("..") && this.io.exists(rel)) {
+      return this.register(canon, this.io.isDirectory(rel));
     }
     throw new Error(`PATH_NOT_IN_REGISTRY: ${filePath}`);
-  }
-
-  resolveRelative(relPath: string): string {
-    if (!relPath) return this.vaultRoot;
-    return path.join(this.vaultRoot, relPath);
   }
 
   private formatInbox(entry: RegistryEntry): string {
     const lines = [`Inbox folder: ${entry.handle} (${entry.relative})`];
     try {
-      const names = fs.readdirSync(entry.path).sort();
-      for (const name of names) {
-        const fpath = path.join(entry.path, name);
-        if (fs.statSync(fpath).isFile() && name.endsWith(".md")) {
-          const h = this.register(fpath).handle;
+      const { files } = this.io.list(entry.relative);
+      for (const name of files.sort()) {
+        if (name.endsWith(".md")) {
+          const rel = entry.relative ? `${entry.relative}/${name}` : name;
+          const h = this.register(path.join(this.vaultRoot, rel)).handle;
           lines.push(`  ${h}  ${name}`);
         }
       }
@@ -306,8 +298,9 @@ export class Snapshot {
     public hash: string,
   ) {}
 
-  static take(filePath: string): Snapshot {
-    const content = fs.readFileSync(filePath, "utf-8");
+  static take(filePath: string, io: VaultIO): Snapshot {
+    const rel = path.relative(io.rootAbs, filePath);
+    const content = io.readText(rel);
     return new Snapshot(
       filePath,
       content,
@@ -315,11 +308,9 @@ export class Snapshot {
     );
   }
 
-  restore(): void {
-    const dir = path.dirname(this.filePath);
-    const tmpPath = path.join(dir, `.tmp-${crypto.randomBytes(4).toString("hex")}`);
-    fs.writeFileSync(tmpPath, this.content, "utf-8");
-    fs.renameSync(tmpPath, this.filePath);
+  restore(io: VaultIO): void {
+    const rel = path.relative(io.rootAbs, this.filePath);
+    io.writeTextAtomic(rel, this.content);
   }
 }
 
@@ -488,18 +479,22 @@ export class JournalEntry {
 
 export class Journal {
   private filePath: string;
+  private io: VaultIO;
   private entries: JournalEntry[] = [];
   private loaded = false;
 
   constructor(filePath?: string) {
-    this.filePath = filePath || path.join(os.tmpdir(), "note-maintainer-sort-journal.jsonl");
+    this.io = new VaultIO(settings.vaultPath);
+    // Journal lives inside the vault (confinement); an explicit path is
+    // accepted for tests.
+    this.filePath = filePath || path.join(".note-maintainer", "sort-journal.jsonl").replace(/\\/g, "/");
   }
 
   private ensureLoaded(): void {
     if (this.loaded) return;
     this.loaded = true;
-    if (fs.existsSync(this.filePath)) {
-      const lines = fs.readFileSync(this.filePath, "utf-8").split("\n");
+    if (this.io.exists(this.filePath)) {
+      const lines = this.io.readText(this.filePath).split("\n");
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed) {
@@ -512,7 +507,7 @@ export class Journal {
   append(entry: JournalEntry): void {
     this.ensureLoaded();
     this.entries.push(entry);
-    fs.appendFileSync(this.filePath, entry.toJSON() + "\n");
+    this.io.appendText(this.filePath, entry.toJSON() + "\n");
   }
 
   hasIdempotencyKey(key: string): boolean {
@@ -535,8 +530,8 @@ export class Journal {
   clear(): void {
     this.entries = [];
     this.loaded = true;
-    if (fs.existsSync(this.filePath)) {
-      fs.unlinkSync(this.filePath);
+    if (this.io.exists(this.filePath)) {
+      this.io.remove(this.filePath);
     }
   }
 }
@@ -705,7 +700,8 @@ export class EligibilityFilter {
     const chunkHandle = chunk.handle || "";
     try {
       const filePath = ctx.registry.resolve(chunkHandle);
-      const diskContent = fs.readFileSync(filePath);
+      const rel = path.relative(ctx.registry.vaultRoot, filePath);
+      const diskContent = ctx.registry.io.readBinary(rel);
       const diskHash = crypto.createHash("sha1").update(diskContent).digest("hex").slice(0, 12);
       const indexHash = (chunk.file_content_hash || "").slice(0, 12);
       if (indexHash && diskHash !== indexHash) return EXCLUDED;

@@ -2,7 +2,6 @@
 // Ported from src/agent/tools.py
 
 import * as crypto from "crypto";
-import * as fs from "fs";
 import * as path from "path";
 import { settings } from "../config";
 import { errorMessage } from "../errors";
@@ -183,7 +182,7 @@ export function applyEdits(args: Record<string, unknown>): string {
   }
 
   // Snapshot before
-  const before = Snapshot.take(filePath);
+  const before = Snapshot.take(filePath, reg.io);
   let lines = before.content.split("\n");
 
   // Validate ops before applying
@@ -262,14 +261,13 @@ export function applyEdits(args: Record<string, unknown>): string {
     }
   }
 
-  // Write result atomically
+  // Write result atomically (confined to the vault)
   const result = lines.join("\n");
-  const tmpPath = path.join(path.dirname(filePath), `.tmp-${crypto.randomBytes(4).toString("hex")}`);
-  fs.writeFileSync(tmpPath, result, "utf-8");
-  fs.renameSync(tmpPath, filePath);
+  const rel = path.relative(reg.vaultRoot, filePath);
+  reg.io.writeTextAtomic(rel, result);
 
   // Snapshot after
-  const after = Snapshot.take(filePath);
+  const after = Snapshot.take(filePath, reg.io);
 
   // Run validators
   const sanctionWords: string[] = [];
@@ -316,7 +314,7 @@ export function applyEditsImpl(args: Record<string, unknown>): string {
     return `RESOLVE_ERROR: ${errorMessage(e)}`;
   }
 
-  const before = Snapshot.take(filePath);
+  const before = Snapshot.take(filePath, reg.io);
   let lines = before.content.split("\n");
 
   const rejected: Array<{ op: string; reason: string }> = [];

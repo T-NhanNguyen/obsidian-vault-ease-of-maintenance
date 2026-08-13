@@ -17,6 +17,7 @@ import {
   runChatQuery,
   ProposedChange,
 } from "./src/agent/runtime";
+import { VaultIO } from "./src/io/vault_io";
 import { resetRegistry } from "./src/agent/tools";
 import { openReviewInModal } from "./src/container-modal";
 import {
@@ -532,22 +533,15 @@ export default class VaultMaintenancePlugin extends Plugin {
 // ---------------------------------------------------------------------------
 
 function acceptProposal(filePath: string, proposal: ProposedChange): void {
-  /* eslint-disable @typescript-eslint/no-require-imports -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
-  const fs = require("fs") as typeof import("fs");
-  const crypto = require("crypto") as typeof import("crypto");
-  const path = require("path") as typeof import("path");
-  /* eslint-enable @typescript-eslint/no-require-imports -- function-scope require keeps the load-time chain minimal (Obsidian loader; see TROUBLESHOOTING-NOTES.md) */
-
-  const absPath = path.join(settings.vaultPath, filePath);
+  const io = new VaultIO(settings.vaultPath);
+  const rel = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
   // Backup the current on-disk file
-  const bakPath = absPath + ".bak";
+  const bakRel = rel + ".bak";
   let suffix = 0;
-  while (fs.existsSync(bakPath + (suffix ? `.${suffix}` : ""))) suffix++;
-  fs.copyFileSync(absPath, bakPath + (suffix ? `.${suffix}` : ""));
+  while (io.exists(bakRel + (suffix ? `.${suffix}` : ""))) suffix++;
+  io.copy(rel, bakRel + (suffix ? `.${suffix}` : ""));
 
-  // Atomic write of the cleaned content
-  const tmpPath = absPath + `.tmp-${crypto.randomBytes(4).toString("hex")}`;
-  fs.writeFileSync(tmpPath, proposal.cleaned, "utf-8");
-  fs.renameSync(tmpPath, absPath);
+  // Atomic write of the cleaned content (confined to the vault)
+  io.writeTextAtomic(rel, proposal.cleaned);
 }

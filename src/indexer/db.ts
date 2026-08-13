@@ -6,8 +6,8 @@
 
 import type Database from "better-sqlite3";
 import * as path from "path";
-import * as fs from "fs";
 import { settings } from "../config";
+import { VaultIO } from "../io/vault_io";
 
 // Obsidian's plugin loader does not resolve bare specifiers from the plugin's
 // node_modules (error: "Cannot find module 'better-sqlite3'" with require stack
@@ -59,12 +59,10 @@ export function collectCandidatePaths(): string[] {
     // Scan every plugin folder under the config dir — works for any install
     // folder name, so plugin id vs folder-name mismatches cannot break loading.
     const pluginsRoot = path.join(vault, configDir, "plugins");
-    try {
-      for (const entry of fs.readdirSync(pluginsRoot)) {
-        candidates.add(path.join(pluginsRoot, entry, "node_modules", "better-sqlite3"));
-      }
-    } catch {
-      // plugins dir does not exist (no Obsidian install at this vault) — skip
+    const io = new VaultIO(vault);
+    const { dirs } = io.list(path.join(configDir, "plugins").replace(/\\/g, "/"));
+    for (const entry of dirs) {
+      candidates.add(path.join(pluginsRoot, entry, "node_modules", "better-sqlite3"));
     }
   }
   if (typeof __dirname === "string" && __dirname) {
@@ -170,10 +168,7 @@ export class DatabaseManager {
 
   connect(): Database.Database {
     if (this.db) return this.db;
-    const dir = path.dirname(this.dbPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    this.ensureDbDir();
     // Lazy require: keeps better-sqlite3 out of the plugin's load-time
     // require chain (see file header comment).
     const DatabaseCtor = resolveBetterSqlite3();
@@ -181,6 +176,23 @@ export class DatabaseManager {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     return this.db;
+  }
+
+  /** Confined mkdirp for the DB directory (inside the vault via VaultIO). */
+  private ensureDbDir(): void {
+    const dir = path.dirname(this.dbPath);
+    const vault = settings.vaultPath;
+    if (vault) {
+      const io = new VaultIO(vault);
+      const rel = path.relative(io.rootAbs, path.resolve(this.dbPath));
+      if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
+        io.mkdirp(path.dirname(rel).replace(/\\/g, "/"));
+        return;
+      }
+    }
+    // settings unwired (plain-Node scripts/tests) — confine to the db dir
+    // itself so nothing outside it can be touched.
+    new VaultIO(dir).mkdirp(".");
   }
 
   initialize(): void {
