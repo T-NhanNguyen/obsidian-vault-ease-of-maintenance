@@ -8,7 +8,8 @@
 
 import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import type { SettingDefinition, SettingDefinitionItem } from "obsidian";
-import { updateSettings, settings, INDEX_DB_SUFFIX } from "./src/config";
+import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME } from "./src/config";
+import { parseConfigYaml, mergeConfigLayers } from "./src/config-yaml";
 import { errorMessage } from "./src/errors";
 import {
   runCleanup,
@@ -38,6 +39,12 @@ interface PluginSettings {
   apiBaseUrl: string;
   agentModel: string;
   embeddingModel: string;
+  // Embedding dimensions come from config (config.yaml → embedding.dimensions,
+  // overridable in the Settings tab). 0 = unknown (legacy fallback applies).
+  embeddingDimensions: number;
+  // Reasoning gate for local models (gemma-4-31b-it): false disables the
+  // thinking phase. Set via config.yaml agent.enable_thinking.
+  enableThinking: boolean;
   inboxFolder: string;
   ignorePatterns: string;
   manifestFilename: string;
@@ -49,6 +56,8 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   apiBaseUrl: "https://api.openai.com/v1",
   agentModel: "gpt-4o-mini",
   embeddingModel: "text-embedding-3-small",
+  embeddingDimensions: 0,
+  enableThinking: false,
   inboxFolder: "",
   ignorePatterns: "",
   manifestFilename: "_manifest.md",
@@ -57,6 +66,14 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
 
 // Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
 let reviewSeq = 0;
+
+// Embedding dimensions come from config (config.yaml → embedding.dimensions,
+// overridable in the Settings tab). The legacy name-based inference
+// (1536/3072) is only a last-resort fallback when no dimension was set.
+function resolveEmbeddingDimensions(model: string, configured: number): number {
+  if (configured > 0) return configured;
+  return model.includes("large") ? 3072 : 1536;
+}
 
 // ---------------------------------------------------------------------------
 // Setting Tab — metadata-driven dual-path rendering
@@ -87,7 +104,7 @@ const SETTING_META: SettingMeta[] = [
     kind: "text",
     key: "apiKey",
     name: "API key",
-    desc: "API key for OpenAI / openrouter / local LLM. Leave empty to use env vars.",
+    desc: "API key for the OpenAI-compatible API. Save a copy somewhere safe — it may be erased when the plugin updates.",
     placeholder: "Sk-...",
   },
   {
@@ -100,8 +117,8 @@ const SETTING_META: SettingMeta[] = [
   {
     kind: "text",
     key: "agentModel",
-    name: "Agent model",
-    desc: "Model for cleanup, sort, and chat agents.",
+    name: "Reasoning model",
+    desc: "Model for cleanup, sort, and chat agents (e.g. a reasoning model like gemma-4-31b-it).",
     placeholder: "gpt-4o-mini",
   },
   {
@@ -275,10 +292,11 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       },
       embedding: {
         model: s.embeddingModel,
-        dimensions: s.embeddingModel.includes("large") ? 3072 : 1536,
+        dimensions: resolveEmbeddingDimensions(s.embeddingModel, s.embeddingDimensions),
       },
       agent: {
         model: s.agentModel,
+        enableThinking: s.enableThinking,
       },
       inboxFolder: s.inboxFolder,
       ignorePatterns: s.ignorePatterns,
@@ -295,8 +313,14 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
 
 export default class VaultMaintenancePlugin extends Plugin {
   pluginSettings: PluginSettings = DEFAULT_PLUGIN_SETTINGS;
+  // YAML fallback layer (below the Settings tab): <pluginDir>/config.yaml —
+  // the repo's machine-local config. data.json — the MAIN user config —
+  // overrides it. No vault-level config file exists by design: vaults may be
+  // shared (company databases) and must not carry API keys/parameters.
+  private configBase: Partial<PluginSettings> = {};
 
   async onload(): Promise<void> {
+    await this.loadConfigBase();
     await this.loadSettings();
 
     // Set up global settings from plugin config
@@ -312,10 +336,14 @@ export default class VaultMaintenancePlugin extends Plugin {
       },
       embedding: {
         model: this.pluginSettings.embeddingModel,
-        dimensions: this.pluginSettings.embeddingModel.includes("large") ? 3072 : 1536,
+        dimensions: resolveEmbeddingDimensions(
+          this.pluginSettings.embeddingModel,
+          this.pluginSettings.embeddingDimensions,
+        ),
       },
       agent: {
         model: this.pluginSettings.agentModel,
+        enableThinking: this.pluginSettings.enableThinking,
       },
       inboxFolder: this.pluginSettings.inboxFolder,
       ignorePatterns: this.pluginSettings.ignorePatterns,
@@ -363,9 +391,28 @@ export default class VaultMaintenancePlugin extends Plugin {
     resetRegistry();
   }
 
+  // Read one file best-effort; returns null when absent (first run, plugin
+  // store install without config.yaml, etc.).
+  private async tryReadConfigFile(path: string): Promise<string | null> {
+    try {
+      return await this.app.vault.adapter.read(path);
+    } catch {
+      return null;
+    }
+  }
+
+  async loadConfigBase(): Promise<void> {
+    const pluginDir = this.manifest.dir ?? "";
+    const pluginDirYaml = pluginDir
+      ? await this.tryReadConfigFile(`${pluginDir}/${CONFIG_FILENAME}`)
+      : null;
+    this.configBase = pluginDirYaml ? parseConfigYaml(pluginDirYaml) : {};
+  }
+
   async loadSettings(): Promise<void> {
     const loaded = (await this.loadData() ?? {}) as Partial<PluginSettings>;
-    this.pluginSettings = Object.assign({}, DEFAULT_PLUGIN_SETTINGS, loaded);
+    // Priority: defaults ← <pluginDir>/config.yaml ← Settings tab (MAIN, wins).
+    this.pluginSettings = mergeConfigLayers(DEFAULT_PLUGIN_SETTINGS, this.configBase, loaded);
   }
 
   async saveSettings(): Promise<void> {

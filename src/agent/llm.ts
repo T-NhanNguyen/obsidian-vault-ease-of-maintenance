@@ -13,7 +13,9 @@ import { getLlmClient, detectProvider, type ILlmClient, type ChatMessage, type C
 // (the Python original bound **kwargs to named params; TS has no kwargs,
 // so the fn contract is the args object itself). Implementations cast to
 // their declared shape at the top (see ApplyEditsArgs in tools.ts).
-export type ToolFn = (args: Record<string, unknown>) => string;
+// Async fns are supported — retrieval tools (search_index) must await an
+// embeddings HTTP round trip before returning.
+export type ToolFn = (args: Record<string, unknown>) => string | Promise<string>;
 
 export class Tool {
   name: string;
@@ -44,9 +46,9 @@ export class Tool {
     };
   }
 
-  call(args: Record<string, unknown>): string {
+  async call(args: Record<string, unknown>): Promise<string> {
     try {
-      const result = this.fn(args);
+      const result = await this.fn(args);
       return result != null ? String(result) : "(empty)";
     } catch (e) {
       return `Error: ${errorMessage(e)}`;
@@ -66,9 +68,19 @@ export class LLMClient {
   // real chat() loop without HTTP. The ?? fallback keeps the default branch
   // byte-for-byte identical to the pre-seam behavior; the seam never grows
   // into a config surface.
-  constructor(model?: string, llm?: ILlmClient) {
+  // options.enableThinking overrides the config.yaml gate per run — reserved
+  // for features that need reasoning (sort, build-index) — see
+  // .dev-vault/roadmap/thinking-enable-sort-build.md
+  constructor(model?: string, llm?: ILlmClient, options?: { enableThinking?: boolean }) {
     this.model = model || settings.agent.model;
-    this.llm = llm ?? getLlmClient(detectProvider(settings.api.baseUrl || ""), this.model, resolveApiKey(), settings.api.baseUrl);
+    const enableThinking = options?.enableThinking ?? settings.agent.enableThinking;
+    this.llm = llm ?? getLlmClient(
+      detectProvider(settings.api.baseUrl || ""),
+      this.model,
+      resolveApiKey(),
+      settings.api.baseUrl,
+      enableThinking,
+    );
   }
 
   async chat(
@@ -116,7 +128,9 @@ export class LLMClient {
           }
 
           const matched = (tools || []).filter(t => t.name === fnName);
-          const result = matched.length > 0 ? matched[0].call(fnArgs) : `Unknown tool: ${fnName}`;
+          const result = matched.length > 0
+            ? await matched[0].call(fnArgs)
+            : `Unknown tool: ${fnName}`;
 
           messages.push({
             role: "tool",

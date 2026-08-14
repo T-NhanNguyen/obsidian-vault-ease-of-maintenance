@@ -7,9 +7,18 @@ import { settings, INDEX_DB_SUFFIX } from "../config";
 import { VaultIO } from "../io/vault_io";
 import { errorMessage } from "../errors";
 import { LLMClient, Tool } from "./llm";
-import { buildChatContext, reconstructAnswer } from "./chat_context";
+import { reconstructAnswer } from "./chat_context";
 import * as toolImpl from "./tools";
-import { CITE_SOURCE_TOOL, citeSource, resetCitationTracker, getCitationMap } from "./tools";
+import {
+  CITE_SOURCE_TOOL,
+  citeSource,
+  resetCitationTracker,
+  getCitationMap,
+  SEARCH_INDEX_TOOL,
+  searchIndex,
+  resetChatSearchRegistry,
+  getChatSearchResults,
+} from "./tools";
 import cleanupSkillMd from "../../maintainer-definitions/phase-1-note-cleanup.md";
 import {
   ELIGIBLE,
@@ -28,7 +37,7 @@ import { Indexer } from "../indexer/indexer";
 import { DatabaseManager } from "../indexer/db";
 import type { ChatMessage } from "./llm_client";
 import { ManifestEntry, ManifestParser, TocReader } from "../indexer/manifest";
-import type { ChatQueryResult, ChatQueryResponse } from "../types";
+import type { ChatQueryResponse } from "../types";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,15 +50,16 @@ const REWRITE_CONTENT_THRESHOLD = 0.2;
 
 export const CHAT_SYSTEM_PROMPT =
   "You are a research assistant for a personal notes vault. " +
-  "Answer the question using ONLY the context provided. " +
-  "Write in short markdown: brief paragraphs, bullets for lists, and **bold** for key terms. " +
-  "The Context lists numbered sources like [1], [2], [3] — their content follows below. " +
-  "After every claim that uses a source, call the cite_source tool with the source's number from the Context (e.g. cite_source(source_id=1)). " +
+  "Answer questions that do NOT need the vault's notes — general computation, trivia, off-topic questions, web-search-style questions — directly and honestly, and do not call any tool. " +
+  "To answer questions about the vault's notes, first call the search_index tool with a natural-language query; it returns numbered sources [1], [2], … with their full text. " +
+  "Then answer using ONLY those sources. " +
+  "After every claim that uses a source, call the cite_source tool with the source's number (e.g. cite_source(source_id=1)). " +
   "The tool returns a marker like [1]; insert that marker into your answer after the claim. " +
   "Call cite_source for EACH claim that draws from a source; use different source_id values for different sources. " +
   "If a claim is not supported by any source, do not cite anything. " +
   "Never mention file names inline. " +
-  "If the context lacks the answer, say so plainly.";
+  "Write in short markdown: brief paragraphs, bullets for lists, and **bold** for key terms. " +
+  "If the search returned nothing relevant, say so plainly.";
 
 // ---------------------------------------------------------------------------
 // Skill loading
@@ -539,35 +549,30 @@ export async function runChat(question: string): Promise<string> {
   return answer;
 }
 
-// Full chat query payload — search results + LLM synthesis. Mirrors the
-// server's /chat/query response so the native review UI gets both.
+// Full chat query — agent-driven retrieval. The chat agent decides whether
+// the question needs vault knowledge: simple/off-topic questions are answered
+// directly with no tool calls; vault questions trigger the search_index tool
+// (embedding RTT + vector scan), whose results are registered for the UI's
+// sources list and cited via cite_source.
 export async function runChatQuery(
   question: string,
   topK: number = 5,
 ): Promise<ChatQueryResponse> {
-  const embedder = new Embedder(settings);
-  const q = await embedder.embed(question);
-  const db = new DatabaseManager(settings.dbPath);
-  const raw = db.searchSimilar(q, topK);
-
-  const results: ChatQueryResult[] = raw.map(r => ({
-    node_key: r.nodeKey,
-    file_path: r.filePath,
-    heading_path: r.headingPath,
-    score: r.score,
-    text: r.text,
-    line_start: r.lineStart,
-    line_end: r.lineEnd,
-  }));
-
-  let answer: string;
-  if (results.length === 0) {
-    answer = "No relevant information found in your vault.";
-    return { answer, results };
-  }
-
-  const ctx = buildChatContext(results);
+  resetChatSearchRegistry();
   resetCitationTracker();
+
+  const searchTool = new Tool(
+    SEARCH_INDEX_TOOL.name,
+    SEARCH_INDEX_TOOL.description,
+    SEARCH_INDEX_TOOL.parameters,
+    (args) => {
+      const rawQuery = args.query;
+      const query = typeof rawQuery === "string" ? rawQuery : question;
+      const rawTopK = args.top_k;
+      const topKValue = typeof rawTopK === "number" ? rawTopK : topK;
+      return searchIndex(query, topKValue);
+    },
+  );
   const citeTool = new Tool(
     CITE_SOURCE_TOOL.name,
     CITE_SOURCE_TOOL.description,
@@ -575,11 +580,12 @@ export async function runChatQuery(
     citeSource,
   );
 
+  let answer: string;
   try {
     const [, history] = await new LLMClient().chat(
       CHAT_SYSTEM_PROMPT,
-      `Context:\n${ctx}\n\nQuestion: ${question}`,
-      [citeTool],
+      question,
+      [searchTool, citeTool],
       10,
     );
     answer = reconstructAnswer(history);
@@ -587,7 +593,7 @@ export async function runChatQuery(
     answer = "[Synthesis unavailable — LLM error]";
   }
 
-  return { answer, results, citationMap: getCitationMap() };
+  return { answer, results: getChatSearchResults(), citationMap: getCitationMap() };
 }
 
 // ---------------------------------------------------------------------------

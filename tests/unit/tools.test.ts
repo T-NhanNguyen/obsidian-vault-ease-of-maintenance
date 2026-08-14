@@ -5,6 +5,9 @@
 // to receive handle=<object>, ops=undefined and always error via reg.resolve.
 // These tests pin the args-object contract, the error containment, the
 // per-op edit matrix, and the snake_case receipt wire format.
+//
+// Tool.call is async (tools may await embeddings/HTTP), so every assertion
+// awaits the result.
 
 import { describe, it, expect, afterAll } from "vitest";
 import * as fs from "fs";
@@ -46,9 +49,9 @@ afterAll(() => {
 });
 
 describe("apply_edits dispatch shape (TEST-01)", () => {
-  it("Tool.call receives the whole args object and returns a receipt with receipt_id", () => {
+  it("Tool.call receives the whole args object and returns a receipt with receipt_id", async () => {
     const vault = makeToolVault(BASE_NOTE);
-    const result = applyEditsTool().call({
+    const result = await applyEditsTool().call({
       handle: vault.handle,
       ops: [{ op: "join_lines", anchor: { start: 3, end: 4 } }],
     });
@@ -72,9 +75,9 @@ describe("apply_edits dispatch shape (TEST-01)", () => {
     expect(tmpFilesIn(vault.vaultDir)).toEqual([]);
   });
 
-  it("receipt wire format is snake_case (receipt_id, hash_before, ops_applied)", () => {
+  it("receipt wire format is snake_case (receipt_id, hash_before, ops_applied)", async () => {
     const vault = makeToolVault(BASE_NOTE);
-    const result = applyEditsTool().call({
+    const result = await applyEditsTool().call({
       handle: vault.handle,
       ops: [{ op: "join_lines", anchor: { start: 3, end: 4 } }],
     });
@@ -90,21 +93,21 @@ describe("apply_edits dispatch shape (TEST-01)", () => {
 });
 
 describe("Tool.call error containment (TEST-02)", () => {
-  it("surfaces thrown errors as 'Error: <message>'", () => {
+  it("surfaces thrown errors as 'Error: <message>'", async () => {
     const tool = new Tool("boom", "d", {}, () => {
       throw new Error("kaboom");
     });
-    expect(tool.call({})).toBe("Error: kaboom");
+    await expect(tool.call({})).resolves.toBe("Error: kaboom");
   });
 
-  it("maps null and undefined results to (empty)", () => {
+  it("maps null and undefined results to (empty)", async () => {
     const nullTool = new Tool(
       "null",
       "d",
       {},
       (() => null) as unknown as (args: Record<string, unknown>) => string,
     );
-    expect(nullTool.call({})).toBe("(empty)");
+    await expect(nullTool.call({})).resolves.toBe("(empty)");
 
     const undefTool = new Tool(
       "undef",
@@ -112,12 +115,12 @@ describe("Tool.call error containment (TEST-02)", () => {
       {},
       (() => undefined) as unknown as (args: Record<string, unknown>) => string,
     );
-    expect(undefTool.call({})).toBe("(empty)");
+    await expect(undefTool.call({})).resolves.toBe("(empty)");
   });
 });
 
 describe("cite_source through Tool.call (TEST-03)", () => {
-  it("returns [n] markers through the dispatch path", () => {
+  it("returns [n] markers through the dispatch path", async () => {
     resetCitationTracker();
     const tool = new Tool(
       CITE_SOURCE_TOOL.name,
@@ -125,12 +128,12 @@ describe("cite_source through Tool.call (TEST-03)", () => {
       CITE_SOURCE_TOOL.parameters,
       citeSource,
     );
-    expect(tool.call({ source_id: 1 })).toBe("[1]");
-    expect(tool.call({ source_id: 2 })).toBe("[2]");
-    expect(tool.call({ source_id: 1 })).toBe("[1]");
+    await expect(tool.call({ source_id: 1 })).resolves.toBe("[1]");
+    await expect(tool.call({ source_id: 2 })).resolves.toBe("[2]");
+    await expect(tool.call({ source_id: 1 })).resolves.toBe("[1]");
   });
 
-  it("rejects invalid source_id values", () => {
+  it("rejects invalid source_id values", async () => {
     resetCitationTracker();
     const tool = new Tool(
       CITE_SOURCE_TOOL.name,
@@ -138,15 +141,15 @@ describe("cite_source through Tool.call (TEST-03)", () => {
       CITE_SOURCE_TOOL.parameters,
       citeSource,
     );
-    expect(tool.call({ source_id: 0 })).toContain("Error");
-    expect(tool.call({})).toContain("Error");
+    await expect(tool.call({ source_id: 0 })).resolves.toContain("Error");
+    await expect(tool.call({})).resolves.toContain("Error");
   });
 });
 
 describe("apply_edits per-op matrix (TEST-04)", () => {
-  it("join_lines merges a range into one line", () => {
+  it("join_lines merges a range into one line", async () => {
     const vault = makeToolVault(BASE_NOTE);
-    applyEditsTool().call({
+    await applyEditsTool().call({
       handle: vault.handle,
       ops: [{ op: "join_lines", anchor: { start: 3, end: 4 } }],
     });
@@ -155,9 +158,9 @@ describe("apply_edits per-op matrix (TEST-04)", () => {
     expect(written).not.toContain("First paragraph line one.\nSecond");
   });
 
-  it("insert_header inserts text before a line", () => {
+  it("insert_header inserts text before a line", async () => {
     const vault = makeToolVault(BASE_NOTE);
-    applyEditsTool().call({
+    await applyEditsTool().call({
       handle: vault.handle,
       ops: [{ op: "insert_header", anchor: { before_line: 3 }, text: "# New Section" }],
     });
@@ -165,9 +168,9 @@ describe("apply_edits per-op matrix (TEST-04)", () => {
     expect(written).toContain("# New Section\nFirst paragraph line one.");
   });
 
-  it("remove_span removes a tagged range", () => {
+  it("remove_span removes a tagged range", async () => {
     const vault = makeToolVault(BASE_NOTE);
-    applyEditsTool().call({
+    await applyEditsTool().call({
       handle: vault.handle,
       ops: [{ op: "remove_span", kind: "tag", anchor: { start: 3, end: 4 } }],
     });
@@ -177,9 +180,9 @@ describe("apply_edits per-op matrix (TEST-04)", () => {
     expect(written).toContain("Third paragraph line one.");
   });
 
-  it("collapse_blanks keeps a single blank line", () => {
+  it("collapse_blanks keeps a single blank line", async () => {
     const vault = makeToolVault(BASE_NOTE);
-    applyEditsTool().call({
+    await applyEditsTool().call({
       handle: vault.handle,
       ops: [{ op: "collapse_blanks", anchor: { start: 5, end: 6 } }],
     });
@@ -196,9 +199,9 @@ describe("apply_edits per-op matrix (TEST-04)", () => {
     );
   });
 
-  it("insert_flag inserts a review comment", () => {
+  it("insert_flag inserts a review comment", async () => {
     const vault = makeToolVault(BASE_NOTE);
-    applyEditsTool().call({
+    await applyEditsTool().call({
       handle: vault.handle,
       ops: [{ op: "insert_flag", anchor: { before_line: 3 }, reason: "needs review" }],
     });
@@ -206,9 +209,9 @@ describe("apply_edits per-op matrix (TEST-04)", () => {
     expect(written).toContain("<!-- review: needs review -->\nFirst paragraph line one.");
   });
 
-  it("returns ALL_OPS_REJECTED and leaves the file unchanged when every op is invalid", () => {
+  it("returns ALL_OPS_REJECTED and leaves the file unchanged when every op is invalid", async () => {
     const vault = makeToolVault(BASE_NOTE);
-    const result = applyEditsTool().call({
+    const result = await applyEditsTool().call({
       handle: vault.handle,
       ops: [{ op: "bogus_op", anchor: {} }],
     });
@@ -219,20 +222,20 @@ describe("apply_edits per-op matrix (TEST-04)", () => {
     expect(tmpFilesIn(vault.vaultDir)).toEqual([]);
   });
 
-  it("keeps the pre-existing NaN slice/splice behavior for missing anchors", () => {
+  it("keeps the pre-existing NaN slice/splice behavior for missing anchors", async () => {
     const vault = makeToolVault(BASE_NOTE);
     const tool = applyEditsTool();
 
     // join_lines with no anchor: Number(undefined) - 1 = NaN, slice/splice
     // treat NaN as 0 → the op is a no-op on the file (do NOT "fix" to
     // 0-based indexing; pin the current semantics as a regression guard).
-    const joinResult = tool.call({ handle: vault.handle, ops: [{ op: "join_lines", anchor: {} }] });
+    const joinResult = await tool.call({ handle: vault.handle, ops: [{ op: "join_lines", anchor: {} }] });
     const joinReceipt = JSON.parse(joinResult) as { receipt_id: string };
     expect(joinReceipt.receipt_id).toMatch(/^r_\d{4}$/);
     expect(fs.readFileSync(vault.notePath, "utf-8")).toBe(BASE_NOTE);
 
     // insert_header with no before_line: splice(NaN, ...) inserts at index 0.
-    const insertResult = tool.call({
+    const insertResult = await tool.call({
       handle: vault.handle,
       ops: [{ op: "insert_header", anchor: {}, text: "# Top" }],
     });

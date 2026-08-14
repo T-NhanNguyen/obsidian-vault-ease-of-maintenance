@@ -109,11 +109,13 @@ export class LocalLlmClient implements ILlmClient {
   private baseUrl: string;
   private model: string;
   private apiKey?: string;
+  private enableThinking: boolean;
 
-  constructor(baseUrl: string, model: string, apiKey?: string) {
+  constructor(baseUrl: string, model: string, apiKey?: string, enableThinking: boolean = false) {
     this.baseUrl = baseUrl.replace(/\/v1\/?$/, "").replace(/\/$/, "");
     this.model = model;
     this.apiKey = apiKey;
+    this.enableThinking = enableThinking;
   }
 
   async chatCompletion(
@@ -129,6 +131,14 @@ export class LocalLlmClient implements ILlmClient {
     if (tools) {
       payload.tools = tools;
       payload.tool_choice = "auto";
+    }
+    // gemma-4-31b-it (and other reasoning models) emit a long thinking phase
+    // (reasoning_content) before any visible answer. config.yaml
+    // agent.enable_thinking: false sends the explicit off-switch to local
+    // (OMLX/llama.cpp-style) servers. Hosted providers do not support this
+    // parameter, so it is sent by the local client only.
+    if (!this.enableThinking) {
+      payload.chat_template_kwargs = { enable_thinking: false };
     }
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -335,11 +345,12 @@ export function getLlmClient(
   model: string,
   apiKey?: string | null,
   baseUrl?: string | null,
+  enableThinking: boolean = false,
 ): ILlmClient {
   const p = provider.toLowerCase();
 
   if (p === "local") {
-    return new LocalLlmClient(baseUrl || LOCAL_DEFAULT_BASE, model, apiKey || undefined);
+    return new LocalLlmClient(baseUrl || LOCAL_DEFAULT_BASE, model, apiKey || undefined, enableThinking);
   }
   if (p === "openai") {
     return new OpenAiClient(apiKey || "", baseUrl || OPENROUTER_DEFAULT_BASE);

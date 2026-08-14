@@ -2,7 +2,17 @@
 # Copy this file to config.yaml. Edit the values for your environment.
 # Do not commit config.yaml. It can contain your real API key.
 #
-# Key resolution order: plugin settings, api.api_key, environment variable.
+# This file is a FALLBACK layer, not the source of truth. Resolution order:
+#   code defaults <- <pluginDir>/config.yaml <- Settings tab (MAIN)
+# The Obsidian Settings tab (data.json) is the MAIN config and always wins.
+# Plugin-store users have no config.yaml at all — they configure the
+# Settings tab only.
+# There is deliberately NO vault-level config file: vaults may be shared
+# (company-wide databases) and must not carry API keys or parameters.
+# Embedding dimensions come from `embedding.dimensions` — never inferred
+# from the model name.
+#
+# Key resolution order: config.yaml -> plugin settings -> env var.
 # Environment variables: OMLX_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY.
 
 vault_path: /path/to/your/vault   # informational. The plugin uses the vault you open.
@@ -18,11 +28,13 @@ manifest:
   filename: _manifest.md               # manifest file name.
 
 embedding:
-  model: Qwen3-Embedding-0.6B-4bit-DWQ # model for embeddings.
-  dimensions: 1024                     # dimension count.
+  model: embeddinggemma-300m-8bit      # model for embeddings.
+  dimensions: 768                      # dimension count — match the model (embeddinggemma-300m-8bit = 768).
 
 agent:
-  model: gemma-3-4b-it-qat-4bit        # model for clean, sort, and chat.
+  model: gemma-4-31b-it-4bit           # model for clean, sort, and chat.
+  enable_thinking: false               # reasoning models (gemma-4-31b-it) think before answering;
+                                       # set true only for features that need it (see roadmap).
 
 preview:
   enabled: true                        # false = write immediately.

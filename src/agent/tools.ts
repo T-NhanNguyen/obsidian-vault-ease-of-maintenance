@@ -14,6 +14,8 @@ import {
 } from "./engine";
 import { Embedder } from "../indexer/embedder";
 import { DatabaseManager } from "../indexer/db";
+import { buildChatContext } from "./chat_context";
+import type { ChatQueryResult } from "../types";
 
 // ---------------------------------------------------------------------------
 // Global registry
@@ -80,8 +82,25 @@ export function fileStat(handle: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Search index
+// Search index — the agent-driven retrieval tool.
+//
+// The chat agent decides when retrieval is needed: the embedding round trip
+// + full-table vector scan only run when the agent calls search_index (or a
+// simple question is answered directly with no tools at all). Results are
+// REGISTERED so the chat UI can render sources + citations, and returned to
+// the model as numbered full-text blocks ([1], [2], …) to answer and cite
+// against.
 // ---------------------------------------------------------------------------
+
+let chatSearchResults: ChatQueryResult[] = [];
+
+export function resetChatSearchRegistry(): void {
+  chatSearchResults = [];
+}
+
+export function getChatSearchResults(): ChatQueryResult[] {
+  return chatSearchResults;
+}
 
 export async function searchIndex(query: string, topK: number = 5): Promise<string> {
   try {
@@ -89,24 +108,23 @@ export async function searchIndex(query: string, topK: number = 5): Promise<stri
     const queryEmb = await embedder.embed(query);
     const db = new DatabaseManager(settings.dbPath);
     const results = db.searchSimilar(queryEmb, topK);
-    if (results.length === 0) return "NO_RESULTS";
-
-    const reg = getRegistry();
-    const lines: string[] = [];
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      let handle: string;
-      try {
-        handle = reg.getHandle(path.join(reg.vaultRoot, r.filePath));
-      } catch {
-        handle = r.filePath;
-      }
-      lines.push(
-        `[${i + 1}] ${handle} heading=${r.headingPath} score=${r.score.toFixed(3)}\n    ${r.text.slice(0, 200)}`
-      );
+    if (results.length === 0) {
+      chatSearchResults = [];
+      return "NO_RESULTS";
     }
-    return lines.join("\n");
+
+    chatSearchResults = results.map(r => ({
+      node_key: r.nodeKey,
+      file_path: r.filePath,
+      heading_path: r.headingPath,
+      score: r.score,
+      text: r.text,
+      line_start: r.lineStart,
+      line_end: r.lineEnd,
+    }));
+    return buildChatContext(chatSearchResults);
   } catch (e) {
+    chatSearchResults = [];
     return `SEARCH_ERROR: ${errorMessage(e)}`;
   }
 }

@@ -5,6 +5,9 @@
 export const API_KEY_ENV_VARS = ["OMLX_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
 export const CONFIG_FILENAME = "config.yaml";
 export const EXAMPLE_CONFIG_FILENAME = "config.example.yaml";
+// NOTE: no vault-level config file. Vaults may live in company-wide databases
+// where API keys/parameters must not be shared — config lives only in the
+// Settings tab (main) and the repo's plugin-dir config.yaml (fallback).
 
 // Shared paths
 export const INDEX_DB_SUFFIX = ".note-maintainer/index.db";
@@ -30,6 +33,11 @@ export interface QuerySettings {
 
 export interface AgentSettings {
   model: string;
+  // Reasoning models (e.g. gemma-4-31b-it) emit a long thinking phase before
+  // any visible answer. False (default) sends `enable_thinking: false` to
+  // local servers. True lets the server default apply — reserved for features
+  // that need reasoning (see .dev-vault/roadmap/thinking-enable-sort-build.md).
+  enableThinking: boolean;
 }
 
 export interface PreviewSettings {
@@ -76,6 +84,7 @@ export function defaultSettings(): Settings {
     },
     agent: {
       model: "",
+      enableThinking: false,
     },
     preview: {
       enabled: true,

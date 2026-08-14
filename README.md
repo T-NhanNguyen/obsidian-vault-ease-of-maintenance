@@ -13,14 +13,22 @@ The indexer and agents call an OpenAI-compatible API. Use OpenAI, OpenRouter, or
 Set the key in one of these places:
 
 1. Plugin Settings → API Key.
-2. `api.api_key` in `config.yaml`.
+2. `api.api_key` in `config.yaml` (repo-local, plugin dir).
 3. An environment variable: `OMLX_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY`.
 
 The plugin checks these sources in this order.
 
 ### 2. Configure the plugin
 
-Open the plugin Settings tab. Set the API base URL and the models. Set the inbox folder, or leave it empty to auto-discover. See `config.example.yaml` for all options.
+The **Settings tab is the main configuration** and always wins. Resolution order:
+
+```
+code defaults ← <pluginDir>/config.yaml ← Settings tab (MAIN)
+```
+
+- **Plugin-store users:** configure the Settings tab only (they have no `config.yaml`).
+- **Repo users / local dev:** copy `config.example.yaml` → `config.yaml` in the plugin folder.
+- There is **no vault-level config file** by design — vaults may live in shared/company databases where API keys and parameters must not be stored. Config lives only in the Settings tab and the repo's `config.yaml`. See `config.example.yaml` for all options.
 
 ### 3. Build the index
 
