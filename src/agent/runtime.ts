@@ -657,6 +657,9 @@ async function runChatQueryFallback(
   const priorHistory = chatHistory();
   let answer: string;
   try {
+    // History contract: only user/assistant turns are stored (see
+    // chat_session.ts). Retrieval context is piped into THIS request only —
+    // it is never appended, so history stays bounded to 15 Q&A messages.
     const [response] = await new LLMClient().chat(
       CHAT_GROUNDED_SYSTEM_PROMPT,
       `Notes:\n${context}\n\nQuestion: ${question}`,

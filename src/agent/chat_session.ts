@@ -3,6 +3,11 @@
 // turns on disk so each runChatQuery call can re-inject them as prior
 // conversation. Chat-specific only: clean/sort/build never touch it.
 //
+// STORAGE CONTRACT: only plain user/assistant turns are ever stored.
+// Retrieval context (notes blocks), tool calls, and tool results are
+// per-request plumbing — they are piped into the LLM call and never appended,
+// keeping history bounded to CHAT_HISTORY_LIMIT messages.
+//
 // Lifecycle: opened lazily on the first chat turn, deleted when the chat tab
 // closes or the plugin unloads. Stale files (crash orphans) are swept when a
 // new session opens. Files live under {vault}/.note-maintainer/chat/ — inside
