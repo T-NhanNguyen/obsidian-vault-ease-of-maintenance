@@ -13,6 +13,7 @@ import { specKey } from "./types";
 import { renderCleanReview } from "./clean-review";
 import { renderSortReview } from "./sort-review";
 import { renderChatReview } from "./chat-review";
+import { closeChatSession } from "./agent/chat_session";
 
 const LOADING_LABEL = "Loading review…";
 
@@ -67,6 +68,9 @@ export class ReviewCore {
     /** Forget the tab's spec when it is closed, so the next open re-renders. */
     invalidateTab(tabId: ReviewTabId): void {
         if (tabId === "chat") {
+            // The chat session is per-tab: closing the tab clears its memory
+            // (file deleted). Reopening starts a fresh session.
+            closeChatSession();
             this.chatRendered = false;
             if (this.activeSpecKey === "chat") this.activeSpecKey = null;
         } else if (this.activeSpecKey !== "chat") {

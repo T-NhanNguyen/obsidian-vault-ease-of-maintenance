@@ -105,7 +105,24 @@ Every file operation in the plugin routes through one synchronous confinement la
 1. **Path normalization** — absolute paths and parent (`..`) traversal are rejected.
 2. **Realpath verification** — the deepest existing ancestor of a target must resolve at-or-inside the vault root, which defeats symlink escapes (a symlink inside the vault pointing outside).
 
-The plugin writes only inside the vault: the index at `.note-maintainer/index.db`, pending reviews at `.note-maintainer/pending`, the sort journal at `.note-maintainer/sort-journal.jsonl`, `.bak` backups beside edited notes, and atomic `.tmp-*` files beside their targets. Plugin settings are stored by Obsidian via `loadData`. The only native module, `better-sqlite3`, opens the DB path inside the vault (verified via `VaultIO.absPath`); it is the documented exception.
+The plugin writes only inside the vault: the index at `.note-maintainer/index.db`, pending reviews at `.note-maintainer/pending`, the sort journal at `.note-maintainer/sort-journal.jsonl`, the active chat session at `.note-maintainer/chat/session-*.jsonl` (one per chat tab, deleted when the tab closes), `.bak` backups beside edited notes, and atomic `.tmp-*` files beside their targets. Plugin settings are stored by Obsidian via `loadData`. The only native module, `better-sqlite3`, opens the DB path inside the vault (verified via `VaultIO.absPath`); it is the documented exception.
+
+## Version control (git-managed vaults)
+
+All generated data lives under the single `.note-maintainer/` directory, so one ignore rule keeps it out of version control:
+
+```gitignore
+.note-maintainer/
+```
+
+Also consider ignoring Obsidian's own per-user state if your vault is committed or shared: `.obsidian/workspace.json`, `.obsidian/workspace-mobile.json`, and cache directories. The plugin's Settings-tab config (`data.json` under `.obsidian/plugins/obsidian-vault-ease-of-maintenance/`) may hold personal API settings — for shared/committed vaults, ignore it and keep secrets in your own `config.yaml` (see [Configuration](#configuration)) or environment variables instead.
+
+## Chat modes — automatic tool-call detection
+
+The chat agent auto-detects at startup whether the configured model can emit tool calls (one tiny probe call, cached per model):
+
+- **Agentic mode** — the model calls `search_index`/`cite_source` itself. Used when tool calling is detected.
+- **Retrieval fallback mode** — models that cannot call tools (small/quantized models) still get grounded answers: the plugin embeds your question and scans the index deterministically, and the model only writes an answer over the retrieved notes. You are notified once at startup which mode is active; a failed probe (model unreachable, fresh install) stays silent.
 
 ## Important Files
 

@@ -36,6 +36,14 @@ agent:
   enable_thinking: false               # reasoning models (gemma-4-31b-it) think before answering;
                                        # set true only for features that need it (see roadmap).
 
+# Chat tool-calling is AUTO-DETECTED (one probe call at startup, cached per
+# model): models that can't emit tool calls automatically get the retrieval
+# fallback mode (deterministic note search + grounded answer). No config needed.
+# Generated data (index, pending reviews, chat sessions) lives in the vault
+# under .note-maintainer/ — add that one line to your vault's .gitignore.
+# The Settings tab (data.json inside .obsidian/) is the MAIN config; if the
+# vault is committed/shared, ignore data.json and keep secrets in this file.
+
 preview:
   enabled: true                        # false = write immediately.
   ttl_minutes: 30                      # pending reviews older than this are swept.

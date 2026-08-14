@@ -8,6 +8,8 @@ import { VaultIO } from "../io/vault_io";
 import { errorMessage } from "../errors";
 import { LLMClient, Tool } from "./llm";
 import { reconstructAnswer } from "./chat_context";
+import { detectToolCallSupport } from "./capability";
+import { chatHistory, appendChatTurn } from "./chat_session";
 import * as toolImpl from "./tools";
 import {
   CITE_SOURCE_TOOL,
@@ -60,6 +62,18 @@ export const CHAT_SYSTEM_PROMPT =
   "Never mention file names inline. " +
   "Write in short markdown: brief paragraphs, bullets for lists, and **bold** for key terms. " +
   "If the search returned nothing relevant, say so plainly.";
+
+// Used when the chat model cannot emit tool calls (detected by the capability
+// probe): the plugin retrieves notes deterministically and the model only
+// writes a grounded answer — no tool protocol involved.
+export const CHAT_GROUNDED_SYSTEM_PROMPT =
+  "You are a research assistant for a personal notes vault. " +
+  "The user's notes are provided in numbered blocks ([1], [2], …). " +
+  "Answer the question using ONLY those notes — never invent facts. " +
+  "After each claim that draws from a note, add its number in brackets, e.g. [1]. " +
+  "If the notes contain nothing relevant, say so plainly and do not answer from general knowledge. " +
+  "Never mention file names inline. " +
+  "Write in short markdown: brief paragraphs, bullets for lists, and **bold** for key terms.";
 
 // ---------------------------------------------------------------------------
 // Skill loading
@@ -549,14 +563,30 @@ export async function runChat(question: string): Promise<string> {
   return answer;
 }
 
-// Full chat query — agent-driven retrieval. The chat agent decides whether
-// the question needs vault knowledge: simple/off-topic questions are answered
-// directly with no tool calls; vault questions trigger the search_index tool
-// (embedding RTT + vector scan), whose results are registered for the UI's
-// sources list and cited via cite_source.
+// Full chat query — capability-gated. When the configured model can emit
+// tool calls (probed once at startup), the chat agent runs the agentic loop:
+// it decides whether the question needs vault knowledge and calls
+// search_index/cite_source itself. When the model cannot (small models emit
+// no OpenAI-format tool_calls — see tips/gemma-3-4b-no-openai-tool-calls.md),
+// retrieval falls back to a deterministic embed + scan in the plugin and the
+// model only writes a grounded answer. Both modes inject the active chat
+// session's prior turns as history (persistent chat, bounded to 15 messages).
 export async function runChatQuery(
   question: string,
   topK: number = 5,
+): Promise<ChatQueryResponse> {
+  const capability = await detectToolCallSupport();
+  if (capability === "no_tool_calls") {
+    return runChatQueryFallback(question, topK);
+  }
+  // "tool_calls" or "unknown" (probe failed) — keep the agentic path, which
+  // is today's behavior when no capability information exists.
+  return runChatQueryAgentic(question, topK);
+}
+
+async function runChatQueryAgentic(
+  question: string,
+  topK: number,
 ): Promise<ChatQueryResponse> {
   resetChatSearchRegistry();
   resetCitationTracker();
@@ -580,20 +610,68 @@ export async function runChatQuery(
     citeSource,
   );
 
+  const priorHistory = chatHistory();
   let answer: string;
   try {
-    const [, history] = await new LLMClient().chat(
+    const [, rawHistory] = await new LLMClient().chat(
       CHAT_SYSTEM_PROMPT,
       question,
       [searchTool, citeTool],
       10,
+      priorHistory,
     );
-    answer = reconstructAnswer(history);
+    // Only the current turn — prior history must not leak into the
+    // reconstructed answer.
+    const turnStart = 1 + priorHistory.length;
+    answer = reconstructAnswer(rawHistory.slice(turnStart));
+    appendChatTurn(settings.vaultPath, "user", question);
+    appendChatTurn(settings.vaultPath, "assistant", answer);
   } catch {
     answer = "[Synthesis unavailable — LLM error]";
   }
 
   return { answer, results: getChatSearchResults(), citationMap: getCitationMap() };
+}
+
+// Deterministic retrieve-then-generate: the plugin embeds the question, scans
+// the index, and hands the model numbered note blocks to answer from — the
+// model never decides to search. Mirrors the search_index tool path so the
+// chat UI's sources list still renders (searchIndex registers results).
+async function runChatQueryFallback(
+  question: string,
+  topK: number,
+): Promise<ChatQueryResponse> {
+  resetChatSearchRegistry();
+  const context = await searchIndex(question, topK);
+
+  if (context === "NO_RESULTS") {
+    const answer = "No relevant information found in your vault.";
+    appendChatTurn(settings.vaultPath, "user", question);
+    appendChatTurn(settings.vaultPath, "assistant", answer);
+    return { answer, results: [], citationMap: {} };
+  }
+  if (context.startsWith("SEARCH_ERROR")) {
+    throw new Error(context);
+  }
+
+  const priorHistory = chatHistory();
+  let answer: string;
+  try {
+    const [response] = await new LLMClient().chat(
+      CHAT_GROUNDED_SYSTEM_PROMPT,
+      `Notes:\n${context}\n\nQuestion: ${question}`,
+      null,
+      1,
+      priorHistory,
+    );
+    answer = response.trim() || "[The agent produced no answer text.]";
+    appendChatTurn(settings.vaultPath, "user", question);
+    appendChatTurn(settings.vaultPath, "assistant", answer);
+  } catch {
+    answer = "[Synthesis unavailable — LLM error]";
+  }
+
+  return { answer, results: getChatSearchResults(), citationMap: {} };
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,8 @@ const USAGE = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 
 class StubLlmClient implements ILlmClient {
   private queue: ChatResponse[];
+  /** Every messages array passed to chatCompletion, in call order. */
+  public readonly seen: ChatMessage[][] = [];
 
   constructor(queue: ChatResponse[]) {
     this.queue = [...queue];
@@ -27,9 +29,10 @@ class StubLlmClient implements ILlmClient {
 
   async chatCompletion(
     _model: string,
-    _messages: ChatMessage[],
+    messages: ChatMessage[],
     _tools?: ChatTool[] | null,
   ): Promise<ChatResponse> {
+    this.seen.push([...messages]);
     const next = this.queue.shift();
     if (!next) throw new Error("StubLlmClient: response queue exhausted");
     return next;
@@ -89,6 +92,28 @@ describe("chat loop tool dispatch (seam-based happy path)", () => {
     expect(receipt.receipt_id).toMatch(/^r_\d{4}$/);
     expect(fs.readFileSync(vault.notePath, "utf-8")).toContain("# New");
     expect(tmpFilesIn(vault.vaultDir)).toEqual([]);
+  });
+
+  it("injects prior conversation history between system and user", async () => {
+    const stub = new StubLlmClient([
+      stubResponse({ completionId: "c1", content: "Done." }),
+    ]);
+    const client = new LLMClient("test-model", stub);
+
+    const history: ChatMessage[] = [
+      { role: "user", content: "previous question" },
+      { role: "assistant", content: "previous answer" },
+    ];
+    const [answer] = await client.chat("system", "current question", null, 3, history);
+
+    expect(answer).toBe("Done.");
+    const sent = stub.seen[0];
+    expect(sent.map(m => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(sent[1].content).toBe("previous question");
+    expect(sent[2].content).toBe("previous answer");
+    expect(sent[3].content).toBe("current question");
+    // No tools requested on this turn.
+    expect(stub.seen[0]).not.toHaveProperty("tool_calls");
   });
 
   it("reports unknown tool names without crashing", async () => {

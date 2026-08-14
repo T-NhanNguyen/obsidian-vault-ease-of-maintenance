@@ -11,6 +11,8 @@ import type { SettingDefinition, SettingDefinitionItem } from "obsidian";
 import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME } from "./src/config";
 import { parseConfigYaml, mergeConfigLayers } from "./src/config-yaml";
 import { errorMessage } from "./src/errors";
+import { detectToolCallSupport } from "./src/agent/capability";
+import { closeChatSession } from "./src/agent/chat_session";
 import {
   runCleanup,
   runTriage,
@@ -385,10 +387,31 @@ export default class VaultMaintenancePlugin extends Plugin {
 
     // Ribbon entry point — same action as the command palette.
     this.addRibbonIcon("message-circle", "Chat with your vault", () => this.handleChat());
+
+    // Fire-and-forget capability probe: notifies ONCE at startup when
+    // detection succeeds (agentic vs fallback chat). Probe failures are
+    // silent — a fresh install with no model configured must not nag.
+    void this.runCapabilityStartupNotice();
   }
 
   onunload(): void {
+    closeChatSession();
     resetRegistry();
+  }
+
+  // Probe the configured chat model's tool-call support and surface the
+  // outcome once. "unknown" (probe failed / model unreachable) stays silent;
+  // the probe is retried lazily from runChatQuery when the user chats.
+  private async runCapabilityStartupNotice(): Promise<void> {
+    const capability = await detectToolCallSupport();
+    if (capability === "tool_calls") {
+      new Notice("Vault ease of maintenance: tool calling detected — full agentic chat enabled.");
+    } else if (capability === "no_tool_calls") {
+      new Notice(
+        "Vault ease of maintenance: this model can't call tools — chat uses retrieval fallback " +
+        "mode (answers stay grounded in your notes).",
+      );
+    }
   }
 
   // Read one file best-effort; returns null when absent (first run, plugin

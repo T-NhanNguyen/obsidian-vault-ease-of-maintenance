@@ -88,9 +88,14 @@ export class LLMClient {
     user: string,
     tools: Tool[] | null = null,
     maxTurns: number = 10,
+    history: ChatMessage[] = [],
   ): Promise<[string, ChatMessage[]]> {
+    // Prior conversation turns (persistent chat session) are injected between
+    // the system prompt and the current user message — the model sees proper
+    // user/assistant roles instead of flattened text. See chat_session.ts.
     const messages: ChatMessage[] = [
       { role: "system", content: system },
+      ...history,
       { role: "user", content: user },
     ];
 
