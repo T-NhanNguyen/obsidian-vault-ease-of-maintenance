@@ -28,7 +28,16 @@ embedding:
 
 agent:
   model: gemma-4-31b-it-4bit
-  enable_thinking: false
+
+# Per-feature reasoning gate. Reasoning models (gemma-4-31b-it) emit a long
+# thinking phase (reasoning_content) before any visible answer — a big
+# latency cost. OFF by default (measured: no quality gain for sort/build);
+# toggle per feature where quality justifies it. See
+# .dev-vault/roadmap/thinking-enable-sort-build.md
+thinking:
+  chat: false
+  build: false
+  sort: false
 
 preview:
   enabled: true
@@ -51,7 +60,9 @@ describe("parseConfigYaml", () => {
     expect(cfg.embeddingModel).toBe("embeddinggemma-300m-8bit");
     expect(cfg.embeddingDimensions).toBe(768);
     expect(cfg.agentModel).toBe("gemma-4-31b-it-4bit");
-    expect(cfg.enableThinking).toBe(false);
+    expect(cfg.agentThinkingChat).toBe(false);
+    expect(cfg.agentThinkingBuild).toBe(false);
+    expect(cfg.agentThinkingSort).toBe(false);
     expect(cfg.manifestFilename).toBe("_manifest.md");
     expect(cfg.inboxFolder).toBe("");
     expect(cfg.ignorePatterns).toBe("");
@@ -85,12 +96,24 @@ graph:
     expect(tuned.graphInferredMaxEdgesPerSection).toBe(5);
   });
 
+  it("maps the per-feature thinking section", () => {
+    const cfg = parseConfigYaml(
+      "agent:\n  model: gemma-4-31b-it-4bit\nthinking:\n  chat: true\n  build: false\n  sort: true\n"
+    );
+    expect(cfg.agentModel).toBe("gemma-4-31b-it-4bit");
+    expect(cfg.agentThinkingChat).toBe(true);
+    expect(cfg.agentThinkingBuild).toBe(false);
+    expect(cfg.agentThinkingSort).toBe(true);
+  });
+
   it("parses booleans, integers, and quoted strings via the mapping", () => {
     const direct = parseConfigYaml(
-      "agent:\n  enable_thinking: true\n  model: 'x'\nembedding:\n  dimensions: 1024"
+      "agent:\n  model: 'x'\nthinking:\n  chat: true\n  build: true\nembedding:\n  dimensions: 1024"
     );
-    expect(direct.enableThinking).toBe(true);
     expect(direct.agentModel).toBe("x");
+    expect(direct.agentThinkingChat).toBe(true);
+    expect(direct.agentThinkingBuild).toBe(true);
+    expect(direct.agentThinkingSort).toBe(undefined); // not set → default applies
     expect(direct.embeddingDimensions).toBe(1024);
   });
 
@@ -110,6 +133,9 @@ graph:
     expect(cfg.agentModel).toBe("m");
     expect(cfg).not.toHaveProperty("unknownTop");
     expect(cfg).not.toHaveProperty("mystery");
+    // The legacy flat enable_thinking key is dropped — the per-feature
+    // subsection replaces it (unknown keys are ignored, never guessed).
+    expect(parseConfigYaml("agent:\n  enable_thinking: true\n").agentThinkingChat).toBe(undefined);
   });
 
   it("returns an empty mapping for empty or comment-only input", () => {
@@ -120,8 +146,8 @@ graph:
 
 describe("mergeConfigLayers", () => {
   it("applies strict later-wins priority: defaults ← config.yaml ← Settings tab", () => {
-    const defaults = { apiBaseUrl: "https://api.openai.com/v1", embeddingModel: "text-embedding-3-small", embeddingDimensions: 0, agentModel: "gpt-4o-mini", enableThinking: false };
-    const pluginDirYaml = { apiBaseUrl: "http://127.0.0.1:8000/v1", embeddingModel: "embeddinggemma-300m-8bit", agentModel: "gemma-3-4b-it-qat-4bit", enableThinking: false };
+    const defaults = { apiBaseUrl: "https://api.openai.com/v1", embeddingModel: "text-embedding-3-small", embeddingDimensions: 0, agentModel: "gpt-4o-mini" };
+    const pluginDirYaml = { apiBaseUrl: "http://127.0.0.1:8000/v1", embeddingModel: "embeddinggemma-300m-8bit", agentModel: "gemma-3-4b-it-qat-4bit" };
     const dataJson = { agentModel: "gpt-4o-mini" }; // Settings tab — MAIN, wins
 
     const merged = mergeConfigLayers(defaults, pluginDirYaml, dataJson);
@@ -130,12 +156,26 @@ describe("mergeConfigLayers", () => {
       embeddingModel: "embeddinggemma-300m-8bit",
       embeddingDimensions: 0,
       agentModel: "gpt-4o-mini",
-      enableThinking: false,
     });
   });
 
   it("ignores null/undefined layers (absent config files)", () => {
     const merged = mergeConfigLayers({ a: 1 }, undefined, null, { b: 2 });
     expect(merged).toEqual({ a: 1, b: 2 });
+  });
+});
+
+describe("thinkingEnabledFor", () => {
+  it("reads the per-feature gate from settings and defaults to OFF", async () => {
+    const { thinkingEnabledFor, updateSettings, defaultSettings } = await import("../../src/config");
+    updateSettings(defaultSettings());
+    expect(thinkingEnabledFor("chat")).toBe(false);
+    expect(thinkingEnabledFor("build")).toBe(false);
+    expect(thinkingEnabledFor("sort")).toBe(false);
+
+    updateSettings({ agent: { model: "", thinking: { chat: true, build: false, sort: true } } });
+    expect(thinkingEnabledFor("chat")).toBe(true);
+    expect(thinkingEnabledFor("build")).toBe(false);
+    expect(thinkingEnabledFor("sort")).toBe(true);
   });
 });

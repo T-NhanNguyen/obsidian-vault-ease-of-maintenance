@@ -68,12 +68,13 @@ export class LLMClient {
   // real chat() loop without HTTP. The ?? fallback keeps the default branch
   // byte-for-byte identical to the pre-seam behavior; the seam never grows
   // into a config surface.
-  // options.enableThinking overrides the config.yaml gate per run — reserved
-  // for features that need reasoning (sort, build-index) — see
-  // .dev-vault/roadmap/thinking-enable-sort-build.md
+  // options.enableThinking is the per-run reasoning gate — each feature
+  // passes its config.yaml agent.thinking.* value (see thinkingEnabledFor);
+  // the default is OFF (measured: no quality gain for sort/build — see
+  // .dev-vault/roadmap/thinking-enable-sort-build.md).
   constructor(model?: string, llm?: ILlmClient, options?: { enableThinking?: boolean }) {
     this.model = model || settings.agent.model;
-    const enableThinking = options?.enableThinking ?? settings.agent.enableThinking;
+    const enableThinking = options?.enableThinking ?? false;
     this.llm = llm ?? getLlmClient(
       detectProvider(settings.api.baseUrl || ""),
       this.model,

@@ -133,10 +133,10 @@ export class LocalLlmClient implements ILlmClient {
       payload.tool_choice = "auto";
     }
     // gemma-4-31b-it (and other reasoning models) emit a long thinking phase
-    // (reasoning_content) before any visible answer. config.yaml
-    // agent.enable_thinking: false sends the explicit off-switch to local
-    // (OMLX/llama.cpp-style) servers. Hosted providers do not support this
-    // parameter, so it is sent by the local client only.
+    // (reasoning_content) before any visible answer. A feature gate of OFF
+    // (config.yaml agent.thinking.*, sent per-feature) sends the explicit
+    // off-switch to local (OMLX/llama.cpp-style) servers. Hosted providers
+    // do not support this parameter, so it is sent by the local client only.
     if (!this.enableThinking) {
       payload.chat_template_kwargs = { enable_thinking: false };
     }

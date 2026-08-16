@@ -45,9 +45,12 @@ interface PluginSettings {
   // Embedding dimensions come from config (config.yaml → embedding.dimensions,
   // overridable in the Settings tab). 0 = unknown (legacy fallback applies).
   embeddingDimensions: number;
-  // Reasoning gate for local models (gemma-4-31b-it): false disables the
-  // thinking phase. Set via config.yaml agent.enable_thinking.
-  enableThinking: boolean;
+  // Per-feature reasoning gate — config.yaml agent.thinking.{chat,build,sort}
+  // (overridable in the Settings tab). Reasoning models (gemma-4-31b-it)
+  // think before answering; off by default (measured: no quality gain).
+  agentThinkingChat: boolean;
+  agentThinkingBuild: boolean;
+  agentThinkingSort: boolean;
   inboxFolder: string;
   ignorePatterns: string;
   manifestFilename: string;
@@ -73,7 +76,9 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   agentModel: "gpt-4o-mini",
   embeddingModel: "text-embedding-3-small",
   embeddingDimensions: 0,
-  enableThinking: false,
+  agentThinkingChat: false,
+  agentThinkingBuild: false,
+  agentThinkingSort: false,
   inboxFolder: "",
   ignorePatterns: "",
   manifestFilename: "_manifest.md",
@@ -320,7 +325,11 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       },
       agent: {
         model: s.agentModel,
-        enableThinking: s.enableThinking,
+        thinking: {
+          chat: s.agentThinkingChat,
+          build: s.agentThinkingBuild,
+          sort: s.agentThinkingSort,
+        },
       },
       inboxFolder: s.inboxFolder,
       ignorePatterns: s.ignorePatterns,
@@ -381,7 +390,11 @@ export default class VaultMaintenancePlugin extends Plugin {
       },
       agent: {
         model: this.pluginSettings.agentModel,
-        enableThinking: this.pluginSettings.enableThinking,
+        thinking: {
+          chat: this.pluginSettings.agentThinkingChat,
+          build: this.pluginSettings.agentThinkingBuild,
+          sort: this.pluginSettings.agentThinkingSort,
+        },
       },
       inboxFolder: this.pluginSettings.inboxFolder,
       ignorePatterns: this.pluginSettings.ignorePatterns,

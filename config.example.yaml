@@ -33,8 +33,15 @@ embedding:
 
 agent:
   model: gemma-4-31b-it-4bit           # model for clean, sort, and chat.
-  enable_thinking: false               # reasoning models (gemma-4-31b-it) think before answering;
-                                       # set true only for features that need it (see roadmap).
+
+# Per-feature reasoning gate (chat/build/sort toggle independently).
+# Reasoning models (gemma-4-31b-it) think before answering. Default OFF
+# (measured: no quality gain for sort/build on local hardware) — turn a
+# feature ON only where quality justifies the latency.
+thinking:
+  chat: false
+  build: false
+  sort: false
 
 # Chat tool-calling is AUTO-DETECTED (one probe call at startup, cached per
 # model): models that can't emit tool calls automatically get the retrieval

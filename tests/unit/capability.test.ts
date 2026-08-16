@@ -61,7 +61,7 @@ function stubFactory(stub: ILlmClient): void {
 
 beforeEach(() => {
   resetCapabilityCache();
-  updateSettings({ agent: { model: "probe-model", enableThinking: false } });
+  updateSettings({ agent: { model: "probe-model", thinking: { chat: false, build: false, sort: false } } });
 });
 
 afterAll(() => {
@@ -86,7 +86,7 @@ describe("tool-call capability detection", () => {
   });
 
   it("returns unknown without probing when no model is configured", async () => {
-    updateSettings({ agent: { model: "", enableThinking: false } });
+    updateSettings({ agent: { model: "", thinking: { chat: false, build: false, sort: false } } });
     let probed = false;
     setProbeClientFactory(() => {
       probed = true;
@@ -107,7 +107,7 @@ describe("tool-call capability detection", () => {
     stubFactory(new StubLlmClient([toolCallResponse()]));
     expect(await detectToolCallSupport()).toBe("tool_calls");
 
-    updateSettings({ agent: { model: "other-model", enableThinking: false } });
+    updateSettings({ agent: { model: "other-model", thinking: { chat: false, build: false, sort: false } } });
     stubFactory(new StubLlmClient([contentOnlyResponse()]));
     expect(await detectToolCallSupport()).toBe("no_tool_calls");
   });

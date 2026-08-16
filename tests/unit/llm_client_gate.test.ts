@@ -64,7 +64,7 @@ describe("thinking gate payload", () => {
   it("LLMClient options.enableThinking overrides the config gate on the wire", async () => {
     updateSettings({
       api: { baseUrl: "http://127.0.0.1:8000/v1", apiKey: "k" },
-      agent: { model: "gemma-4-31b-it-4bit", enableThinking: false },
+      agent: { model: "gemma-4-31b-it-4bit", thinking: { chat: false, build: false, sort: false } },
     });
 
     // Per-run override ON: no off-switch sent (server default = thinking on).

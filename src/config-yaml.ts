@@ -23,7 +23,9 @@ export interface YamlPluginSettings {
   embeddingModel?: string;
   embeddingDimensions?: number;
   agentModel?: string;
-  enableThinking?: boolean;
+  agentThinkingChat?: boolean;
+  agentThinkingBuild?: boolean;
+  agentThinkingSort?: boolean;
   manifestFilename?: string;
   inboxFolder?: string;
   ignorePatterns?: string;
@@ -95,6 +97,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
   const api = tree["api"] as YamlSection | undefined;
   const embedding = tree["embedding"] as YamlSection | undefined;
   const agent = tree["agent"] as YamlSection | undefined;
+  const thinking = tree["thinking"] as YamlSection | undefined;
   const manifest = tree["manifest"] as YamlSection | undefined;
   const index = tree["index"] as YamlSection | undefined;
   const query = tree["query"] as YamlSection | undefined;
@@ -112,7 +115,9 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     embeddingModel: str(embedding?.["model"]),
     embeddingDimensions: num(embedding?.["dimensions"]),
     agentModel: str(agent?.["model"]),
-    enableThinking: bool(agent?.["enable_thinking"]),
+    agentThinkingChat: bool(thinking?.["chat"]),
+    agentThinkingBuild: bool(thinking?.["build"]),
+    agentThinkingSort: bool(thinking?.["sort"]),
     manifestFilename: str(manifest?.["filename"]),
     indexWarnMb: num(index?.["warn_mb"]),
     queryTopK: num(query?.["top_k"]),

@@ -2,7 +2,7 @@
 // runtime.ts so adjusting the chat concern does not touch the cleanup/sort/
 // build orchestrators.
 
-import { settings } from "../config";
+import { settings, thinkingEnabledFor } from "../config";
 import { LLMClient, Tool } from "./llm";
 import { reconstructAnswer } from "./chat_context";
 import { detectToolCallSupport } from "./capability";
@@ -63,7 +63,9 @@ export async function runChat(question: string): Promise<string> {
     .map(r => `From ${r.filePath} (${r.headingPath}, lines ${r.lineStart}-${r.lineEnd}):\n${r.text}`)
     .join("\n\n");
 
-  const [answer] = await new LLMClient().chat(
+  const [answer] = await new LLMClient(undefined, undefined, {
+    enableThinking: thinkingEnabledFor("chat"),
+  }).chat(
     CHAT_SYSTEM_PROMPT,
     `Context:\n${ctx}\n\nQuestion: ${question}`,
     null,
@@ -121,7 +123,9 @@ async function runChatQueryAgentic(
   const priorHistory = chatHistory();
   let answer: string;
   try {
-    const [, rawHistory] = await new LLMClient().chat(
+    const [, rawHistory] = await new LLMClient(undefined, undefined, {
+      enableThinking: thinkingEnabledFor("chat"),
+    }).chat(
       CHAT_SYSTEM_PROMPT,
       question,
       [searchTool, citeTool],
@@ -168,7 +172,9 @@ async function runChatQueryFallback(
     // History contract: only user/assistant turns are stored (see
     // chat_session.ts). Retrieval context is piped into THIS request only —
     // it is never appended, so history stays bounded to 15 Q&A messages.
-    const [response] = await new LLMClient().chat(
+    const [response] = await new LLMClient(undefined, undefined, {
+      enableThinking: thinkingEnabledFor("chat"),
+    }).chat(
       CHAT_GROUNDED_SYSTEM_PROMPT,
       `Notes:\n${context}\n\nQuestion: ${question}`,
       null,

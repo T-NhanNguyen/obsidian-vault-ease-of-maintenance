@@ -3,7 +3,7 @@
 // chat orchestrators.
 
 import * as path from "path";
-import { settings, INDEX_DB_SUFFIX } from "../config";
+import { settings, INDEX_DB_SUFFIX, thinkingEnabledFor } from "../config";
 import { VaultIO } from "../io/vault_io";
 import { errorMessage } from "../errors";
 import { LLMClient } from "./llm";
@@ -128,7 +128,9 @@ export async function generateManifest(vaultPath: string): Promise<string> {
 
   let purposes: Record<string, string> = {};
   try {
-    const [response] = await new LLMClient().chat(
+    const [response] = await new LLMClient(undefined, undefined, {
+      enableThinking: thinkingEnabledFor("build"),
+    }).chat(
       system,
       `Syllabus:\n\n${syllabus}\n\nComplete these lines:\n${scaffold}`,
       null, 1,

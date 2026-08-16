@@ -53,11 +53,18 @@ export interface GraphSettings {
 
 export interface AgentSettings {
   model: string;
-  // Reasoning models (e.g. gemma-4-31b-it) emit a long thinking phase before
-  // any visible answer. False (default) sends `enable_thinking: false` to
-  // local servers. True lets the server default apply — reserved for features
-  // that need reasoning (see .dev-vault/roadmap/thinking-enable-sort-build.md).
-  enableThinking: boolean;
+  // Per-feature reasoning gate (config.yaml `agent.thinking.*`). Reasoning
+  // models (gemma-4-31b-it) emit a long thinking phase before any visible
+  // answer — measured to give no quality gain for sort/build, so everything
+  // defaults OFF and is toggled per feature where quality justifies latency
+  // (see .dev-vault/roadmap/thinking-enable-sort-build.md).
+  thinking: ThinkingSettings;
+}
+
+export interface ThinkingSettings {
+  chat: boolean;
+  build: boolean;
+  sort: boolean;
 }
 
 export interface PreviewSettings {
@@ -116,7 +123,11 @@ export function defaultSettings(): Settings {
     },
     agent: {
       model: "",
-      enableThinking: false,
+      thinking: {
+        chat: false,
+        build: false,
+        sort: false,
+      },
     },
     preview: {
       enabled: true,
@@ -171,4 +182,12 @@ export function resolveApiKey(): string | null {
     if (val) return val;
   }
   return null;
+}
+
+/**
+ * Per-feature reasoning gate (config.yaml `agent.thinking.*`). Undefined
+ * (absent config, partial Settings) degrades to OFF — the measured default.
+ */
+export function thinkingEnabledFor(feature: keyof ThinkingSettings): boolean {
+  return settings.agent.thinking?.[feature] ?? false;
 }

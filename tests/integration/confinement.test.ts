@@ -27,8 +27,14 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
     embedding: { model: "test", dimensions: 64 },
     manifest: { filename: "_manifest.md" },
     query: { topK: 5, depth: 1, maxFanOut: 8, maxSeeds: 8 },
-    agent: { model: "test" },
+    agent: { model: "test", thinking: { chat: false, build: false, sort: false } },
     preview: { enabled: true, ttlMinutes: 30 },
+    index: { warnMb: 256 },
+    graph: {
+      clusterThreshold: 0.5,
+      inferredThreshold: 0.7,
+      inferredMaxEdgesPerSection: 3,
+    },
   };
 }
 
