@@ -1,15 +1,54 @@
-> [!NOTE]
-> THIS IS STILL A HEAVY WORK IN PROGRESS. UNTILL THIS NOTICE IS DOWN, I'D ADVISE AGAINST USING THIS PLUGIN.
+
+> **Heavy work in progress.** Until this notice is removed, discretion is advised — do not rely on this plugin for vaults you cannot afford to lose.
 
 # Vault Ease of Maintenance
 
-~~GraphRAG indexer~~ Relational embedding index (GraphRAG is currently not achievable. Working hard on that) + LLM-driven agents for Obsidian markdown vaults.
+An LLM-driven assistant that keeps an Obsidian vault easy to maintain. It builds a GraphRAG-style search index of the vault's notes, then uses agents to clean notes, sort the inbox, and answer questions. Everything runs inside Obsidian, you do not need Python, a server, or Docker.
 
-This plugin keeps an Obsidian vault easy to maintain. It builds an vector search index (for now) database of the notes in the vault. It uses LLM agents to clean notes, sort the inbox, and answer questions. Everything runs inside Obsidian. You do not need Python, a server, or Docker.
+## Plans & Goals
+
+- **Goal** — keep growing vaults maintainable: agents tidy messy notes, triage the inbox, and answer questions with cited sources. Nothing changes without your review.
+- **Retrieval** — a GraphRAG-style index: semantic embeddings, an entity/relationship graph, and LLM-written community reports. It is a pragmatic, in-process take on GraphRAG — embeddings stay the primary retrieval signal, and there is no external graph database or clustering service.
+- **Providers** — any OpenAI-compatible API, hosted or fully local. Bring your own key. I will expand to Claude's API in the future.
+- **Roadmap** — the retrieval layer (hybrid search, community reports, global mode, semantic edges) is complete; incremental index builds are wired. Next: agentic capabilities across clean, sort, and build.
+
+## Current Features
+
+- **Build the index** — Builds the GraphRAG-style index: notes are split into sections, each section is embedded, entities and relationships are extracted into a graph, and communities get LLM-written reports. Rebuilds are incremental.
+- **Clean current note** — The cleanup agent proposes edits for the note you have open. Review the diff in the review pane, then accept or reject.
+- **Sort inbox** — The triage agent suggests where each inbox note belongs. Nothing moves without your approval.
+- **Chat with your vault** — Ask a question; the agent answers from the index with cited sources. Models that support tool calls run agentically; others automatically get a deterministic retrieval fallback.
+
+## How Retrieval Works (GraphRAG-style)
+
+The index is a **hybrid of embeddings and a graph**, tuned to run entirely inside Obsidian:
+
+- **Embeddings** — every note section is embedded; semantic search is a cosine scan over stored vectors.
+- **Entity graph** — wikilinks, backlinks, and LLM-extracted semantic relationships form edges that chat search traverses alongside the embeddings.
+- **Community reports** — notes are grouped into communities; the LLM writes a summary per community, and overview-style questions ("what is this vault about?") are answered from those reports.
+
+It is **not** canonical Microsoft GraphRAG — there is no Leiden clustering and no external graph store. It is a GraphRAG-style hybrid that keeps embeddings as the primary retrieval signal while adding graph traversal and a global-report mode.
+
+## Providers
+
+The indexer and agents speak to any **OpenAI-compatible API**:
+
+- **Hosted** — OpenAI, OpenRouter, or any compatible cloud endpoint.
+- **Local** — OMLX, Ollama, LM Studio, vLLM, or any local OpenAI-compatible server.
+
+Bring your own key: set it in the Settings tab, in `config.yaml`, or via an environment variable (`OMLX_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY`). Model choice is free — small local models work too, and chat automatically falls back to deterministic retrieval when a model cannot emit tool calls.
 
 ## Quick Start
 
-### 1. Set the API key
+### 1. Install the plugin
+
+Install from the Obsidian community store:
+
+**https://community.obsidian.md/plugins/ease-of-maintenance**
+
+Store installs work out of the box — the SQLite engine (sql.js, SQLite compiled to WebAssembly) is embedded inside `main.js`, so there is no native module, no `node_modules` in the plugin folder, and no extra asset to ship.
+
+### 2. Set the API key
 
 The indexer and agents call an OpenAI-compatible API. Use OpenAI, OpenRouter, or a local server such as OMLX.
 
@@ -21,7 +60,7 @@ Set the key in one of these places:
 
 The plugin checks these sources in this order.
 
-### 2. Configure the plugin
+### 3. Configure the plugin
 
 The **Settings tab is the main configuration** and always wins. Resolution order:
 
@@ -33,19 +72,19 @@ code defaults ← <pluginDir>/config.yaml ← Settings tab (MAIN)
 - **Repo users / local dev:** copy `config.example.yaml` → `config.yaml` in the plugin folder.
 - There is **no vault-level config file** by design — vaults may live in shared/company databases where API keys and parameters must not be stored. Config lives only in the Settings tab and the repo's `config.yaml`. See `config.example.yaml` for all options.
 
-### 3. Build the index
+### 4. Build the index
 
-Run the command **Build GraphRAG index**. The plugin scans the vault, splits notes into header sections, extracts entities, and creates embeddings. It stores the index at `{vault}/.note-maintainer/index.db`.
+Run the command **Build graphrag index**. The plugin scans the vault, splits notes into header sections, extracts entities and relationships, builds the graph, writes community reports, and creates embeddings. It stores the index at `{vault}/.note-maintainer/index.db`.
 
 If no `_manifest.md` exists, the plugin derives one from the index. Review it before you run sort.
 
-### 4. Use the agents
+### 5. Use the agents
 
 - **Clean current note** — clean the note you have open. The plugin proposes edits. Review the diff in the modal, then accept or reject.
 - **Sort inbox** — triage the inbox. The plugin returns placement decisions. It does not move files without your approval.
 - **Chat with your vault** — ask a question. The plugin answers from the index with cited sources.
 
-### 5. Install the plugin
+### Manual install (repo users / local dev)
 
 1. Run `npm run build` in the repo root. This writes `main.js` (with the
    sql.js WASM engine embedded inside it) and `sql-wasm.wasm` (kept as a
@@ -58,12 +97,8 @@ If no `_manifest.md` exists, the plugin derives one from the index. Review it be
    Easiest: run `./build-plugin.sh <vault-path>` (copies all four files).
 4. Enable the plugin in Obsidian: Settings → Community Plugins.
 
-**Plugin-store installs work out of the box**: the SQLite engine is sql.js
-(SQLite compiled to WebAssembly), embedded inside `main.js` — no native
-module, no `node_modules` in the plugin folder, and no extra asset to ship
-(the store installer fetches exactly `main.js`, `manifest.json`,
-`styles.css`). On the first run after upgrading from a version that used
-the native `better-sqlite3` engine, the plugin retires the old index to
+On the first run after upgrading from a version that used the native
+`better-sqlite3` engine, the plugin retires the old index to
 `.note-maintainer/legacy/` and rebuilds it once (the index is derived data;
 Obsidian notifies you).
 
@@ -71,7 +106,7 @@ Obsidian notifies you).
 
 | Command | Purpose |
 |---|---|
-| Build GraphRAG index | Full index rebuild from scratch. |
+| Build graphrag index | Full index rebuild from scratch. |
 | Clean current note | Run the cleanup agent on the open note. |
 | Sort inbox | Run the triage agent on the inbox. |
 | Chat with your vault | Ask a question about the vault. |
@@ -80,9 +115,10 @@ Obsidian notifies you).
 
 | Setting | Purpose |
 |---|---|
+| Review container | Where clean/sort reviews and chat open: a docked sidebar pane or a centered modal overlay. |
 | API Key | Key for the OpenAI-compatible API. Optional when you use an env var. |
 | API Base URL | Base URL of the API. |
-| Agent Model | Model for clean, sort, and chat. |
+| Reasoning model | Model for clean, sort, and chat. |
 | Embedding Model | Model for embeddings. |
 | Inbox Folder | Folder to sort. Empty = auto-discover. |
 | Ignore Patterns | One glob per line. Skips matching files and folders. |
@@ -90,7 +126,7 @@ Obsidian notifies you).
 
 ## Review UI
 
-Clean, sort, and chat render in native Obsidian views. There is no browser tab and no server.
+Clean, sort, and chat render in native Obsidian views — a docked sidebar pane or a centered modal, per the **Review container** setting. There is no browser tab and no server.
 
 - **Clean review** — a modal shows the original and the cleaned content side by side. Accept writes the file and saves a `.bak` backup. Reject keeps the original.
 - **Sort review** — a modal lists the placement decisions with scores and destination context.
@@ -168,6 +204,7 @@ The chat agent auto-detects at startup whether the configured model can emit too
 | `tests/` | Vitest suite. |
 
 ## When to Rebuild
+If you've cloned this repo and looking to manually build the project, run the follow `./build-plugin.sh --all` or remove the `--all` flag and specific the specific vault you want.
 
 | Change | Rebuild? | Why |
 |---|---|---|
