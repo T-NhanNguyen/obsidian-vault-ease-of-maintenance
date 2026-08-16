@@ -600,9 +600,41 @@ export class SqlJsDatabase {
     );
   }
 
+  /**
+   * The semantic (LLM-extracted) edges of a file — kind LIKE 'semantic%'.
+   * Mirrors getWikilinkEdges' path shape (exact file node or section keys);
+   * the Phase-5 traversal driver fetches these alongside the wikilink/
+   * backlink edges per file.
+   */
+  getSemanticEdges(fileId: string): EdgeRow[] {
+    return queryAll<EdgeRow>(
+      this.conn.prepare(
+        `SELECT src_key, dst_key, kind, weight FROM EDGES
+         WHERE kind LIKE 'semantic%' AND (src_key = ? OR src_key LIKE ?)`,
+      ),
+      [fileId, `${fileId}::%`],
+    );
+  }
+
   deleteEdgesForFile(fileId: string): void {
     this.conn.run(
       "DELETE FROM EDGES WHERE src_key = ? OR src_key LIKE ? OR dst_key = ? OR dst_key LIKE ?",
+      [fileId, `${fileId}::%`, fileId, `${fileId}::%`],
+    );
+    this.dirty = true;
+  }
+
+  /**
+   * Delete ONLY the structural edges (wikilink/backlink) of a file — the
+   * incremental changed-file leg uses this: structural edges are recomputed
+   * right after, while the LLM-extracted semantic edges are PRESERVED
+   * (locally re-extracting a changed file alone provably loses its cross-
+   * file relations — the weekly full rebuild refreshes them instead).
+   */
+  deleteStructuralEdgesForFile(fileId: string): void {
+    this.conn.run(
+      `DELETE FROM EDGES WHERE kind IN ('wikilink', 'backlink')
+       AND (src_key = ? OR src_key LIKE ? OR dst_key = ? OR dst_key LIKE ?)`,
       [fileId, `${fileId}::%`, fileId, `${fileId}::%`],
     );
     this.dirty = true;
@@ -664,6 +696,30 @@ export class SqlJsDatabase {
 
   clearCommunityAssignments(): void {
     this.conn.run("DELETE FROM COMMUNITY_SECTIONS");
+    this.dirty = true;
+  }
+
+  /**
+   * Delete auto-clustered communities (seed_source = 'auto') that have NO
+   * member sections left, plus their reports. Used by the incremental
+   * re-cluster on unseeded vaults AFTER re-assignment: communities that
+   * lost every member are stale (and their reports cannot regenerate — no
+   * sections); survivors keep their rows AND their reports, so the
+   * report-regeneration diff only touches truly-changed communities.
+   * Reports reference communities, so they go first (FK hygiene).
+   */
+  pruneEmptyAutoCommunities(): void {
+    this.conn.run(
+      "DELETE FROM COMMUNITY_REPORTS WHERE community_id IN (" +
+        "SELECT community_id FROM COMMUNITIES WHERE seed_source = 'auto' " +
+        "AND NOT EXISTS (SELECT 1 FROM COMMUNITY_SECTIONS cs " +
+        "WHERE cs.community_id = COMMUNITIES.community_id))",
+    );
+    this.conn.run(
+      "DELETE FROM COMMUNITIES WHERE seed_source = 'auto' " +
+        "AND NOT EXISTS (SELECT 1 FROM COMMUNITY_SECTIONS cs " +
+        "WHERE cs.community_id = COMMUNITIES.community_id)",
+    );
     this.dirty = true;
   }
 
@@ -739,6 +795,15 @@ export class SqlJsDatabase {
     return queryOne<MetaRow>(
       this.conn.prepare("SELECT * FROM INDEX_META ORDER BY snapshot_id DESC LIMIT 1"),
     );
+  }
+
+  /** Every indexed file id — the incremental deleted-file detection reads
+   * this once and diffs against the scan (a file in the DB but absent from
+   * the scan was deleted from the vault). */
+  getAllFileIds(): string[] {
+    return queryAll<{ file_id: string }>(
+      this.conn.prepare("SELECT file_id FROM FILES ORDER BY file_id"),
+    ).map((row) => row.file_id);
   }
 
   // ------------------------------------------------------------------

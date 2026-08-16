@@ -31,7 +31,8 @@ export async function runBuild(vaultPath: string): Promise<string> {
     console.warn("  [build] No _manifest.md found — building non-manifest index first, then deriving one.");
   }
 
-  const indexer = new Indexer(settings, undefined, new ChatReportLlm());
+  const llmSeam = new ChatReportLlm();
+  const indexer = new Indexer(settings, undefined, llmSeam, llmSeam);
   await indexer.build();
   const files = indexer.scanner.scan().length;
 
@@ -39,7 +40,7 @@ export async function runBuild(vaultPath: string): Promise<string> {
     try {
       await generateManifest(vaultPath);
       manifestGenerated = true;
-      const indexer2 = new Indexer(settings, undefined, new ChatReportLlm());
+      const indexer2 = new Indexer(settings, undefined, llmSeam, llmSeam);
       await indexer2.build();
     } catch (e) {
       console.warn(`  [build] Manifest generation failed (${errorMessage(e)}) — index remains degraded.`);

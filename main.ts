@@ -71,6 +71,7 @@ interface PluginSettings {
   graphInferredThreshold: number;
   graphInferredMaxEdgesPerSection: number;
   reportsContextCapTokens: number;
+  extractionContextCapTokens: number;
 }
 
 const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -96,6 +97,7 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   graphInferredThreshold: 0.7,
   graphInferredMaxEdgesPerSection: 3,
   reportsContextCapTokens: 3000,
+  extractionContextCapTokens: 3000,
 };
 
 // Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
@@ -359,6 +361,9 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       reports: {
         contextCapTokens: s.reportsContextCapTokens,
       },
+      extraction: {
+        contextCapTokens: s.extractionContextCapTokens,
+      },
     });
   }
 }
@@ -424,6 +429,9 @@ export default class VaultMaintenancePlugin extends Plugin {
       },
       reports: {
         contextCapTokens: this.pluginSettings.reportsContextCapTokens,
+      },
+      extraction: {
+        contextCapTokens: this.pluginSettings.extractionContextCapTokens,
       },
     });
 

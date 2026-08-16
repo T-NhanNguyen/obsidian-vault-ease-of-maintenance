@@ -39,6 +39,7 @@ export interface YamlPluginSettings {
   graphInferredThreshold?: number;
   graphInferredMaxEdgesPerSection?: number;
   reportsContextCapTokens?: number;
+  extractionContextCapTokens?: number;
 }
 
 interface YamlSection {
@@ -105,6 +106,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
   const query = tree["query"] as YamlSection | undefined;
   const graph = tree["graph"] as YamlSection | undefined;
   const reports = tree["reports"] as YamlSection | undefined;
+  const extraction = tree["extraction"] as YamlSection | undefined;
 
   const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
   const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
@@ -132,6 +134,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     graphInferredThreshold: num(graph?.["inferred_threshold"]),
     graphInferredMaxEdgesPerSection: num(graph?.["inferred_max_edges_per_section"]),
     reportsContextCapTokens: num(reports?.["context_cap_tokens"]),
+    extractionContextCapTokens: num(extraction?.["context_cap_tokens"]),
   };
 }
 

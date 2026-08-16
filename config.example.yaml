@@ -84,6 +84,16 @@ graph:
 reports:
   context_cap_tokens: 3000
 
+# LLM entity-extraction tuning — the build-side semantic-graph pass
+# (Phase 5): typed entities + relationships become semantic EDGES, queried
+# through the hybrid search's traversal. Deliberately NOT in the Settings
+# tab (advanced tuning).
+#   context_cap_tokens: token budget per extraction LLM call — also the
+#     per-file cap. Files are batched greedily under this budget; higher =
+#     fewer LLM calls per build (richer context), more tokens per call.
+extraction:
+  context_cap_tokens: 3000
+
 index:
   warn_mb: 256                # warning threshold for the index file size (MB). sql.js
                               # holds ~10× the file size in RAM while building — warn

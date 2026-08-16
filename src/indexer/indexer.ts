@@ -12,6 +12,9 @@ import { DatabaseManager, FileWriteInput, SearchResult, SectionWriteInput } from
 import { hybridQuery, HybridQueryOptions } from "./graph_search";
 import { assignCommunities, computeSeedEmbeddings, ensureAutoCommunities } from "./communities";
 import { generateCommunityReports, ReportLlm } from "./community_reports";
+import { regenerateChangedCommunityReports, snapshotCommunityMembership } from "./community_reports";
+import { generateSemanticGraph, groupSectionsByFile, refreshEntityMentions } from "./entity_extraction";
+import type { ExtractableSection } from "./entity_extraction";
 import { Embedder, IEmbedder } from "./embedder";
 import { GraphBuilder } from "./graph";
 import { ManifestParser } from "./manifest";
@@ -24,6 +27,15 @@ interface JournalEntryRecord {
   old_path?: string;
 }
 
+/** SectionInfo → the extraction module's minimal section shape. */
+function toExtractableSection(section: SectionInfo): ExtractableSection {
+  return {
+    node_key: section.nodeKey,
+    text: section.text,
+    heading_path: section.headingPath ?? null,
+  };
+}
+
 export class Indexer {
   settings: Settings;
   db: DatabaseManager;
@@ -34,8 +46,9 @@ export class Indexer {
   manifestParser: ManifestParser;
   private io: VaultIO;
   private readonly reportLlm?: ReportLlm;
+  private readonly extractionLlm?: ReportLlm;
 
-  constructor(customSettings?: Settings, embedder?: IEmbedder, reportLlm?: ReportLlm) {
+  constructor(customSettings?: Settings, embedder?: IEmbedder, reportLlm?: ReportLlm, extractionLlm?: ReportLlm) {
     this.settings = customSettings || settings;
     this.io = new VaultIO(this.settings.vaultPath);
     this.db = new DatabaseManager(this.settings.dbPath);
@@ -49,6 +62,7 @@ export class Indexer {
     this.embedder = embedder || new Embedder(this.settings);
     this.manifestParser = new ManifestParser(this.settings.vaultPath);
     this.reportLlm = reportLlm;
+    this.extractionLlm = extractionLlm;
   }
 
   // ------------------------------------------------------------------
@@ -90,6 +104,26 @@ export class Indexer {
 
       // Compute edges
       await this.graph.computeAllEdges(allSections, filePaths);
+
+      // LLM entity extraction — typed entities + relationships → semantic
+      // EDGES (Phase 5 of the GraphRAG buildout). Optional like the report
+      // pass: wired only when an LLM was given (production passes
+      // ChatReportLlm; the test harness passes none → regex-only graph,
+      // zero HTTP). Failure is non-fatal: the regex tier stays the baseline
+      // and the index remains usable — semantic edges simply stay absent.
+      if (this.extractionLlm) {
+        try {
+          await generateSemanticGraph(this.db, this.extractionLlm, groupSectionsByFile(allSections), {
+            // `?.` guard: partial Settings in tests degrade to the module
+            // default (DEFAULT_EXTRACTION_CONTEXT_CAP_TOKENS).
+            contextCapTokens: this.settings.extraction?.contextCapTokens,
+          });
+        } catch (e) {
+          console.warn(
+            `[build] LLM entity extraction failed (${errorMessage(e)}) — graph stays regex-only.`,
+          );
+        }
+      }
 
       // Assign sections to communities — seeded vaults keep the cosine
       // assignment; unseeded vaults get auto-clustered communities so every
@@ -139,13 +173,27 @@ export class Indexer {
     try {
       await this.db.initialize();
       const files = this.scanner.scan();
+      const scanPaths = new Set(files.map((f) => f.path));
       const changed: FileInfo[] = [];
       for (const f of files) {
         if (await this.db.hasFileChanged(f)) changed.push(f);
       }
-      if (changed.length === 0) return;
 
-      const filePaths = new Set(files.map(f => f.path));
+      // Deleted-file gap (roadmap item): a file in the index but absent from
+      // the scan was deleted from the vault. The cold build hid this via
+      // clearAll; the incremental leg must remove it explicitly (the same
+      // retire → delete-edges → remove trio the move path uses).
+      const dbFileIds = await this.db.getAllFileIds();
+      const deleted = dbFileIds.filter((id) => !scanPaths.has(id)).sort();
+      for (const fileId of deleted) {
+        await this.db.retireSections(fileId);
+        await this.db.deleteEdgesForFile(fileId);
+        await this.db.removeFile(fileId);
+      }
+
+      if (changed.length === 0 && deleted.length === 0) return;
+
+      const filePaths = new Set(files.map((f) => f.path));
       const manifestPath = this.manifestParser.findManifest();
       const seeds = this.manifestParser.getCommunitySeeds(manifestPath);
       const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
@@ -156,37 +204,101 @@ export class Indexer {
       const oldManifestHash = meta ? (meta.manifest_hash || "") : "";
       const manifestChanged = oldManifestHash !== manifestHash;
 
-      if (manifestChanged && seeds.length > 0) {
-        await this.db.clearCommunityAssignments();
-        for (const seed of seeds) {
-          await this.db.insertCommunity({
-            communityId: seed.communityId,
-            seedSource: seed.seedSource,
-            label: seed.label,
-          });
-        }
-      }
+      // Membership snapshot BEFORE any assignment mutation — the report-
+      // regeneration diff compares the after-state against it (Phase-5
+      // item 4: regenerate only changed communities, never all).
+      const membershipBefore = await snapshotCommunityMembership(this.db);
 
       const changedSections: SectionInfo[] = [];
       for (const fileInfo of changed) {
         if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
         await this.db.retireSections(fileInfo.path);
-        await this.db.deleteEdgesForFile(fileInfo.path);
+        // Structural edges only — the LLM semantic edges are PRESERVED:
+        // re-extracting a changed file alone (without the files it relates
+        // to) provably loses its cross-file relations; the weekly full
+        // rebuild refreshes the semantic graph instead.
+        await this.db.deleteStructuralEdgesForFile(fileInfo.path);
         const sections = await this.indexFile(fileInfo, filePaths, contentTypeDefaults);
         changedSections.push(...sections);
       }
 
+      // Restore the LLM-entity mention rows the retire wiped (regex-tier
+      // mentions were re-added by indexFile; the 'llm:*' multi-word entities
+      // need a cheap name re-match against the changed sections).
+      if (changedSections.length > 0) {
+        try {
+          await refreshEntityMentions(this.db, changedSections.map(toExtractableSection));
+        } catch (e) {
+          console.warn(
+            `[incremental] LLM-entity mention refresh failed (${errorMessage(e)}) — resolver entity tier degrades for changed files.`,
+          );
+        }
+      }
+
       // Recompute edges for affected files
       if (changedSections.length > 0) {
-        const changedFileIds = new Set(changedSections.map(s => s.fileId));
+        const changedFileIds = new Set(changedSections.map((s) => s.fileId));
         const allSections = await this.db.getAllSections();
         await this.graph.computeEdgesForFiles(changedSections, changedFileIds, allSections, filePaths);
       }
 
-      // Re-assign communities if manifest changed
-      if (manifestChanged) {
-        const seedEbs = await computeSeedEmbeddings(this.embedder, seeds);
-        await assignCommunities(this.db, changedSections, seeds, seedEbs);
+      // Community assignment:
+      if (seeds.length > 0) {
+        if (manifestChanged) {
+          // Seeds changed — re-seed + re-assign EVERY section (a seed
+          // embedding shift would otherwise leave stale assignments for
+          // untouched sections until the next full rebuild; roadmap item 4
+          // flagged this as a decision — full re-assignment is correct).
+          await this.db.clearCommunityAssignments();
+          for (const seed of seeds) {
+            await this.db.insertCommunity({
+              communityId: seed.communityId,
+              seedSource: seed.seedSource,
+              label: seed.label,
+            });
+          }
+          const seedEbs = await computeSeedEmbeddings(this.embedder, seeds);
+          const allSections = await this.db.getAllSections();
+          await assignCommunities(this.db, allSections, seeds, seedEbs);
+        } else if (changedSections.length > 0) {
+          // Seeds unchanged — re-assign ONLY the changed sections (their
+          // old rows were retired); stable seed ids keep the untouched
+          // sections' assignments valid.
+          const seedEbs = await computeSeedEmbeddings(this.embedder, seeds);
+          await assignCommunities(this.db, changedSections, seeds, seedEbs);
+        }
+      } else {
+        // Unseeded vault — re-cluster ALL sections. Auto ids are content-
+        // derived (anchor-based), so unchanged clusters keep their ids;
+        // survivors also keep their reports, so the membership diff below
+        // regenerates only the truly-changed communities (Phase-5 item 4 —
+        // unseeded incremental previously never clustered at all). Auto
+        // communities that lost every member are pruned (rows + reports).
+        await this.db.clearCommunityAssignments();
+        const allSections = await this.db.getAllSections();
+        await ensureAutoCommunities(
+          this.db,
+          allSections,
+          this.settings.graph?.clusterThreshold,
+        );
+        await this.db.pruneEmptyAutoCommunities();
+      }
+
+      // Community reports — regenerate ONLY communities whose membership
+      // changed (or that have no report yet — a self-healing retry of a
+      // previous LLM failure). Membership-unchanged communities keep their
+      // reports untouched (Phase-5 item 4: report regen becomes a write leg
+      // of the daily delta, not a full re-pass).
+      if (this.reportLlm) {
+        try {
+          await regenerateChangedCommunityReports(this.db, this.reportLlm, membershipBefore, {
+            contextCapTokens: this.settings.reports?.contextCapTokens,
+          });
+        } catch (e) {
+          console.warn(
+            `[incremental] Community report regeneration failed (${errorMessage(e)}) — reports stay stale.`,
+          );
+        }
       }
 
       await this.db.insertMeta(`vault:${files.length}files`, manifestHash);

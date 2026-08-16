@@ -376,8 +376,18 @@ export class DatabaseManager {
     return this.callDb("getWikilinkEdges", fileId);
   }
 
+  /** The LLM-extracted (semantic) edges of a file — Phase-5 traversal fetch. */
+  async getSemanticEdges(fileId: string): Promise<EdgeRow[]> {
+    return this.callDb("getSemanticEdges", fileId);
+  }
+
   async deleteEdgesForFile(fileId: string): Promise<void> {
     await this.callDb("deleteEdgesForFile", fileId);
+  }
+
+  /** Delete only wikilink/backlink edges — incremental preserves semantic edges. */
+  async deleteStructuralEdgesForFile(fileId: string): Promise<void> {
+    await this.callDb("deleteStructuralEdgesForFile", fileId);
   }
 
   async getUnlinkedSections(): Promise<UnlinkedSection[]> {
@@ -404,6 +414,11 @@ export class DatabaseManager {
     await this.callDb("clearCommunityAssignments");
   }
 
+  /** Prune auto communities with no members + their reports (incremental re-cluster). */
+  async pruneEmptyAutoCommunities(): Promise<void> {
+    await this.callDb("pruneEmptyAutoCommunities");
+  }
+
   async upsertCommunityReport(report: CommunityReportWriteInput): Promise<void> {
     await this.callDb("upsertCommunityReport", report);
   }
@@ -427,6 +442,11 @@ export class DatabaseManager {
 
   async getLatestMeta(): Promise<MetaRow | null> {
     return this.callDb("getLatestMeta");
+  }
+
+  /** Every indexed file id — incremental's deleted-file detection diff. */
+  async getAllFileIds(): Promise<string[]> {
+    return this.callDb("getAllFileIds");
   }
 
   async computeFileRollup(fileId: string): Promise<string | null> {

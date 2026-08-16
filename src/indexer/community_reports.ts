@@ -79,6 +79,14 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
+/** The minimal section surface the report-context builder needs — anything
+ * with these three fields is accepted (DB rows, in-memory index sections). */
+export interface ReportSectionInput {
+  node_key: string;
+  text: string | null;
+  heading_path: string | null;
+}
+
 /** A context block selected for one community report. */
 export interface ReportContext {
   /** The markdown block passed to the LLM ("### heading\ntext" per section). */
@@ -96,7 +104,7 @@ export interface ReportContext {
  * Sections with empty text are skipped.
  */
 export function buildReportContext(
-  sections: SectionSearchRow[],
+  sections: ReportSectionInput[],
   capTokens: number = DEFAULT_REPORT_CONTEXT_CAP_TOKENS,
 ): ReportContext {
   const ordered = [...sections].sort((a, b) => a.node_key.localeCompare(b.node_key));
@@ -188,6 +196,7 @@ export class ChatReportLlm implements ReportLlm {
 export interface CommunityReportStore {
   getAllCommunities(): Promise<CommunityRow[]>;
   getSectionsForCommunity(communityId: string): Promise<SectionSearchRow[]>;
+  getAllCommunityReports(): Promise<CommunityReportRow[]>;
   upsertCommunityReport(report: CommunityReportWriteInput): Promise<void>;
 }
 
@@ -213,28 +222,50 @@ export async function generateCommunityReports(
   llm: ReportLlm,
   opts: { contextCapTokens?: number } = {},
 ): Promise<CommunityReportResult[]> {
+  const communities = await db.getAllCommunities();
+  return generateCommunityReportsFor(
+    db,
+    llm,
+    communities.map((c) => c.community_id),
+    opts,
+  );
+}
+
+/**
+ * The subset driver — one LLM call per requested community (ids sorted,
+ * deterministic), labels resolved from the store. Shared by the full build
+ * pass and the incremental pass (which regenerates only communities whose
+ * membership changed — see regenerateChangedCommunityReports).
+ */
+export async function generateCommunityReportsFor(
+  db: CommunityReportStore,
+  llm: ReportLlm,
+  communityIds: string[],
+  opts: { contextCapTokens?: number } = {},
+): Promise<CommunityReportResult[]> {
   const capTokens = opts.contextCapTokens ?? DEFAULT_REPORT_CONTEXT_CAP_TOKENS;
   const communities = await db.getAllCommunities();
+  const labelById = new Map(communities.map((c) => [c.community_id, c.label || c.community_id]));
   const results: CommunityReportResult[] = [];
 
-  for (const community of communities) {
-    const sections = await db.getSectionsForCommunity(community.community_id);
+  for (const communityId of [...communityIds].sort()) {
+    const sections = await db.getSectionsForCommunity(communityId);
     const built = buildReportContext(sections, capTokens);
     if (built.includedSectionKeys.length === 0) continue;
 
-    const label = community.label || community.community_id;
+    const label = labelById.get(communityId) ?? communityId;
     const completion = await llm.complete(
       REPORT_SYSTEM_PROMPT,
       `Community: ${label}\n\nSections:\n${built.context}`,
     );
     await db.upsertCommunityReport({
-      communityId: community.community_id,
+      communityId,
       report: completion.content,
       model: completion.model,
       tokens: completion.totalTokens,
     });
     results.push({
-      communityId: community.community_id,
+      communityId,
       report: completion.content,
       model: completion.model,
       tokens: completion.totalTokens,
@@ -243,6 +274,62 @@ export async function generateCommunityReports(
   }
 
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// Incremental report regeneration (Phase-5 item 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Snapshot each community's membership (community_id → section keys). Taken
+ * BEFORE an incremental pass mutates assignment; the after-state is compared
+ * against it to find the communities whose reports must be regenerated.
+ */
+export async function snapshotCommunityMembership(
+  db: CommunityReportStore,
+): Promise<Map<string, Set<string>>> {
+  const communities = await db.getAllCommunities();
+  const snapshot = new Map<string, Set<string>>();
+  for (const community of communities) {
+    const sections = await db.getSectionsForCommunity(community.community_id);
+    snapshot.set(community.community_id, new Set(sections.map((s) => s.node_key)));
+  }
+  return snapshot;
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const key of a) {
+    if (!b.has(key)) return false;
+  }
+  return true;
+}
+
+/**
+ * Regenerate reports ONLY for communities whose membership changed since the
+ * given snapshot, plus communities that have no report yet (a self-healing
+ * retry of a previous LLM failure). Deterministic: ids compared in sorted
+ * order; regenerated in generateCommunityReportsFor's sorted order.
+ */
+export async function regenerateChangedCommunityReports(
+  db: CommunityReportStore,
+  llm: ReportLlm,
+  before: Map<string, Set<string>>,
+  opts: { contextCapTokens?: number } = {},
+): Promise<CommunityReportResult[]> {
+  const after = await snapshotCommunityMembership(db);
+  const reported = new Set((await db.getAllCommunityReports()).map((r) => r.community_id));
+
+  const changed: string[] = [];
+  const allIds = new Set([...before.keys(), ...after.keys()]);
+  for (const communityId of [...allIds].sort()) {
+    const beforeKeys = before.get(communityId) ?? new Set<string>();
+    const afterKeys = after.get(communityId) ?? new Set<string>();
+    if (setsEqual(beforeKeys, afterKeys) && reported.has(communityId)) continue;
+    changed.push(communityId);
+  }
+
+  return generateCommunityReportsFor(db, llm, changed, opts);
 }
 
 // ---------------------------------------------------------------------------

@@ -270,6 +270,7 @@ export interface HybridQueryDb {
   getAllEntities(): Promise<EntityRow[]>;
   getSectionsForEntities(entityIds: string[]): Promise<SectionEntityRow[]>;
   getWikilinkEdges(fileId: string): Promise<EdgeRow[]>;
+  getSemanticEdges(fileId: string): Promise<EdgeRow[]>;
   getSectionsByKeys(keys: string[]): Promise<SectionSearchRow[]>;
 }
 
@@ -346,10 +347,11 @@ export async function hybridQuery(
 }
 
 /**
- * Level-by-level expansion. Edges are fetched per file (getWikilinkEdges)
- * only when a file first enters the frontier — the pure BFS runs per level
- * over the edges accumulated so far, so depth > 1 never needs the full edge
- * set up front.
+ * Level-by-level expansion. Edges are fetched per file (getWikilinkEdges +
+ * getSemanticEdges — the Phase-5 LLM-extracted edges flow through the same
+ * fetch, since expandNeighbors excludes only 'inferred') only when a file
+ * first enters the frontier — the pure BFS runs per level over the edges
+ * accumulated so far, so depth > 1 never needs the full edge set up front.
  */
 async function expandGraph(
   db: HybridQueryDb,
@@ -367,6 +369,7 @@ async function expandGraph(
       if (fetchedFiles.has(fileId)) continue;
       fetchedFiles.add(fileId);
       edges.push(...(await db.getWikilinkEdges(fileId)));
+      edges.push(...(await db.getSemanticEdges(fileId)));
     }
 
     const expanded = expandNeighbors(frontier, edges, { depth: 1, maxFanOut });

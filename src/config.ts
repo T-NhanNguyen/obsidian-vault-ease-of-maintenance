@@ -64,6 +64,17 @@ export interface ReportsSettings {
   contextCapTokens: number;
 }
 
+// LLM entity-extraction tuning — config.yaml `extraction:` section. Drives
+// the build-side semantic-graph pass (entity_extraction.ts — Phase 5 of the
+// GraphRAG buildout). YAML-only like graph:/reports: (advanced tuning;
+// Settings tab untouched).
+export interface ExtractionSettings {
+  /** Token budget per extraction call — also the per-file cap (batch = the
+   * greedy packing of files under this budget). Higher = more sections per
+   * LLM call, fewer calls, richer extraction. */
+  contextCapTokens: number;
+}
+
 export interface AgentSettings {
   model: string;
   // Per-feature reasoning gate (config.yaml `agent.thinking.*`). Reasoning
@@ -108,6 +119,7 @@ export interface Settings {
   index: IndexSettings;
   graph: GraphSettings;
   reports: ReportsSettings;
+  extraction: ExtractionSettings;
 }
 
 export function defaultSettings(): Settings {
@@ -159,6 +171,9 @@ export function defaultSettings(): Settings {
     reports: {
       contextCapTokens: 3000,
     },
+    extraction: {
+      contextCapTokens: 3000,
+    },
   };
 }
 
@@ -193,6 +208,9 @@ export function updateSettings(partial: Partial<Settings>): void {
   }
   if (partial.reports) {
     settings.reports = { ...settings.reports, ...partial.reports };
+  }
+  if (partial.extraction) {
+    settings.extraction = { ...settings.extraction, ...partial.extraction };
   }
 }
 
