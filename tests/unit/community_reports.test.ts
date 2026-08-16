@@ -15,11 +15,14 @@ import {
   ChatReportLlm,
   estimateTokens,
   generateCommunityReports,
+  generateCommunityReportsFor,
   globalQuery,
   isOverviewQuestion,
   OVERVIEW_MARKERS,
+  regenerateChangedCommunityReports,
   ReportLlm,
   ReportLlmResult,
+  snapshotCommunityMembership,
 } from "../../src/indexer/community_reports";
 import type { IEmbedder } from "../../src/indexer/embedder";
 import type {
@@ -190,6 +193,16 @@ class FakeReportStore {
     return this.sectionsByCommunity.get(communityId) || [];
   }
 
+  async getAllCommunityReports(): Promise<CommunityReportRow[]> {
+    return this.written.map((w) => ({
+      community_id: w.communityId || w.community_id || "",
+      report: w.report || null,
+      model: w.model || null,
+      tokens: w.tokens ?? null,
+      built_at: w.builtAt || w.built_at || null,
+    }));
+  }
+
   async upsertCommunityReport(report: CommunityReportWriteInput): Promise<void> {
     this.written.push(report);
   }
@@ -277,6 +290,149 @@ describe("generateCommunityReports", () => {
     expect(results).toEqual([]);
     expect(store.written).toEqual([]);
     expect(llm.seen).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateCommunityReportsFor — the subset driver (incremental write leg)
+// ---------------------------------------------------------------------------
+
+describe("generateCommunityReportsFor", () => {
+  it("generates only the requested communities, labels resolved from the store", async () => {
+    const store = new FakeReportStore(
+      [
+        { community_id: "c1", seed_source: "auto", label: "Stocks" },
+        { community_id: "c2", seed_source: "auto", label: "Coffee" },
+      ],
+      new Map([
+        ["c1", [section("c1.md::S1", "a".repeat(4))]],
+        ["c2", [section("c2.md::S3", "c".repeat(4))]],
+      ]),
+    );
+    const llm = new StubReportLlm([llmResult("report-c2", 5, "stub-model")]);
+
+    const results = await generateCommunityReportsFor(store, llm, ["c2"], { contextCapTokens: 5 });
+
+    expect(llm.seen).toHaveLength(1);
+    expect(llm.seen[0].user).toContain("Community: Coffee");
+    expect(llm.seen[0].user).not.toContain("Community: Stocks");
+    expect(store.written).toHaveLength(1);
+    expect(store.written[0].communityId).toBe("c2");
+    expect(results.map((r) => r.communityId)).toEqual(["c2"]);
+  });
+
+  it("processes ids in sorted order regardless of input order", async () => {
+    const store = new FakeReportStore(
+      [
+        { community_id: "c1", seed_source: "auto", label: "Stocks" },
+        { community_id: "c2", seed_source: "auto", label: "Coffee" },
+      ],
+      new Map([
+        ["c1", [section("c1.md::S1", "a".repeat(4))]],
+        ["c2", [section("c2.md::S3", "c".repeat(4))]],
+      ]),
+    );
+    const llm = new StubReportLlm([llmResult("r1"), llmResult("r2")]);
+
+    await generateCommunityReportsFor(store, llm, ["c2", "c1"], { contextCapTokens: 5 });
+
+    expect(llm.seen[0].user).toContain("Community: Stocks"); // c1 first (sorted)
+    expect(llm.seen[1].user).toContain("Community: Coffee");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Incremental report regeneration — membership diff
+// ---------------------------------------------------------------------------
+
+describe("snapshotCommunityMembership / regenerateChangedCommunityReports", () => {
+  it("snapshots community_id → member keys", async () => {
+    const store = new FakeReportStore(
+      [
+        { community_id: "aa", seed_source: "auto", label: "A" },
+        { community_id: "bb", seed_source: "auto", label: "B" },
+      ],
+      new Map([
+        ["aa", [section("x.md::S1", "a".repeat(4)), section("x.md::S2", "b".repeat(4))]],
+        ["bb", []],
+      ]),
+    );
+
+    const snapshot = await snapshotCommunityMembership(store);
+    expect([...snapshot.get("aa")!].sort()).toEqual(["x.md::S1", "x.md::S2"]);
+    expect(snapshot.get("bb")).toEqual(new Set());
+  });
+
+  it("regenerates only communities whose membership changed", async () => {
+    const store = new FakeReportStore(
+      [
+        { community_id: "c1", seed_source: "auto", label: "Stocks" },
+        { community_id: "c2", seed_source: "auto", label: "Coffee" },
+      ],
+      new Map([
+        ["c1", [section("c1.md::S1", "a".repeat(4)), section("c1.md::S2", "b".repeat(4))]],
+        ["c2", [section("c2.md::S3", "c".repeat(4))]],
+      ]),
+    );
+    const before = await snapshotCommunityMembership(store);
+
+    // c2 already has a report and its membership is unchanged → skipped.
+    await store.upsertCommunityReport({
+      communityId: "c2",
+      report: "existing",
+      model: "m",
+      tokens: 1,
+    });
+    // Simulate the incremental assignment change: c1 lost S2.
+    store.sectionsByCommunity.set("c1", [section("c1.md::S1", "a".repeat(4))]);
+
+    const llm = new StubReportLlm([llmResult("report-c1", 9, "stub-model")]);
+    const results = await regenerateChangedCommunityReports(store, llm, before, {
+      contextCapTokens: 5,
+    });
+
+    expect(llm.seen).toHaveLength(1); // only c1 regenerated
+    expect(llm.seen[0].user).toContain("Community: Stocks");
+    expect(llm.seen[0].user).not.toContain("Community: Coffee");
+    expect(results.map((r) => r.communityId)).toEqual(["c1"]);
+  });
+
+  it("retries communities with no report even when membership is unchanged", async () => {
+    const store = new FakeReportStore(
+      [{ community_id: "c1", seed_source: "auto", label: "Stocks" }],
+      new Map([["c1", [section("c1.md::S1", "a".repeat(4))]]]),
+    );
+    const before = await snapshotCommunityMembership(store);
+    const llm = new StubReportLlm([llmResult("r1")]);
+
+    const results = await regenerateChangedCommunityReports(store, llm, before, {
+      contextCapTokens: 5,
+    });
+
+    expect(llm.seen).toHaveLength(1); // no report yet → regenerated (self-heal)
+    expect(results.map((r) => r.communityId)).toEqual(["c1"]);
+  });
+
+  it("regenerates nothing when membership is unchanged and reports exist", async () => {
+    const store = new FakeReportStore(
+      [{ community_id: "c1", seed_source: "auto", label: "Stocks" }],
+      new Map([["c1", [section("c1.md::S1", "a".repeat(4))]]]),
+    );
+    await store.upsertCommunityReport({
+      communityId: "c1",
+      report: "existing",
+      model: "m",
+      tokens: 1,
+    });
+    const before = await snapshotCommunityMembership(store);
+    const llm = new StubReportLlm();
+
+    const results = await regenerateChangedCommunityReports(store, llm, before, {
+      contextCapTokens: 5,
+    });
+
+    expect(llm.seen).toHaveLength(0);
+    expect(results).toEqual([]);
   });
 });
 

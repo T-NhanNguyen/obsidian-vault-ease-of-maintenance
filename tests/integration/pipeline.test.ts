@@ -102,6 +102,9 @@ function makeSettings(
     reports: {
       contextCapTokens: 3000,
     },
+    extraction: {
+      contextCapTokens: 3000,
+    },
   };
   return {
     ...base,

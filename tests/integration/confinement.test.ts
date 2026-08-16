@@ -36,6 +36,7 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
       inferredMaxEdgesPerSection: 3,
     },
     reports: { contextCapTokens: 3000 },
+    extraction: { contextCapTokens: 3000 },
   };
 }
 

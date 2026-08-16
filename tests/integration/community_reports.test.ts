@@ -80,6 +80,7 @@ function makeSettings(vaultPath: string, dbPath: string, reports?: Partial<Setti
       inferredMaxEdgesPerSection: 3,
     },
     reports: { contextCapTokens: 3000, ...reports },
+    extraction: { contextCapTokens: 3000 },
   };
 }
 
