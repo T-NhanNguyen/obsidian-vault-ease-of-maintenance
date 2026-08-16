@@ -28,6 +28,13 @@ export interface YamlPluginSettings {
   inboxFolder?: string;
   ignorePatterns?: string;
   indexWarnMb?: number;
+  queryTopK?: number;
+  queryDepth?: number;
+  queryMaxFanOut?: number;
+  queryMaxSeeds?: number;
+  graphClusterThreshold?: number;
+  graphInferredThreshold?: number;
+  graphInferredMaxEdgesPerSection?: number;
 }
 
 interface YamlSection {
@@ -90,6 +97,8 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
   const agent = tree["agent"] as YamlSection | undefined;
   const manifest = tree["manifest"] as YamlSection | undefined;
   const index = tree["index"] as YamlSection | undefined;
+  const query = tree["query"] as YamlSection | undefined;
+  const graph = tree["graph"] as YamlSection | undefined;
 
   const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
   const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
@@ -106,6 +115,13 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     enableThinking: bool(agent?.["enable_thinking"]),
     manifestFilename: str(manifest?.["filename"]),
     indexWarnMb: num(index?.["warn_mb"]),
+    queryTopK: num(query?.["top_k"]),
+    queryDepth: num(query?.["depth"]),
+    queryMaxFanOut: num(query?.["max_fan_out"]),
+    queryMaxSeeds: num(query?.["max_seeds"]),
+    graphClusterThreshold: num(graph?.["cluster_threshold"]),
+    graphInferredThreshold: num(graph?.["inferred_threshold"]),
+    graphInferredMaxEdgesPerSection: num(graph?.["inferred_max_edges_per_section"]),
   };
 }
 

@@ -62,10 +62,15 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
     api: { baseUrl: "http://localhost:9999/v1", apiKey: "test-key" },
     embedding: { model: "test", dimensions: 64 },
     manifest: { filename: "_manifest.md" },
-    query: { topK: 5 },
+    query: { topK: 5, depth: 1, maxFanOut: 8, maxSeeds: 8 },
     agent: { model: "test", enableThinking: false },
     preview: { enabled: true, ttlMinutes: 30 },
     index: { warnMb: 256 },
+    graph: {
+      clusterThreshold: 0.5,
+      inferredThreshold: 0.7,
+      inferredMaxEdgesPerSection: 3,
+    },
   };
 }
 

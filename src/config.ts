@@ -29,6 +29,26 @@ export interface ManifestSettings {
 
 export interface QuerySettings {
   topK: number;
+  /** Hybrid-search BFS levels past the resolved seeds (graph_search.ts). */
+  depth: number;
+  /** Max outgoing edges followed per key per level (graph_search.ts). */
+  maxFanOut: number;
+  /** Max resolver seeds to expand from (graph_search.ts). */
+  maxSeeds: number;
+}
+
+// Graph-build tuning — the knobs that shape the stored graph (EDGES +
+// COMMUNITIES). Single source of truth: config.yaml `graph:` section; the
+// Settings tab deliberately does NOT expose them (advanced tuning).
+export interface GraphSettings {
+  /** Cosine threshold below which a section starts a new auto-cluster
+   * (communities.ts — unseeded vaults). Higher = fewer, larger communities. */
+  clusterThreshold: number;
+  /** Cosine threshold for inferred (cosine-derived) edges (graph.ts).
+   * Higher = fewer inferred edges, leaner EDGES table. */
+  inferredThreshold: number;
+  /** Max inferred edges emitted per section (graph.ts). */
+  inferredMaxEdgesPerSection: number;
 }
 
 export interface AgentSettings {
@@ -66,6 +86,7 @@ export interface Settings {
   agent: AgentSettings;
   preview: PreviewSettings;
   index: IndexSettings;
+  graph: GraphSettings;
 }
 
 export function defaultSettings(): Settings {
@@ -89,6 +110,9 @@ export function defaultSettings(): Settings {
     },
     query: {
       topK: 5,
+      depth: 1,
+      maxFanOut: 8,
+      maxSeeds: 8,
     },
     agent: {
       model: "",
@@ -100,6 +124,11 @@ export function defaultSettings(): Settings {
     },
     index: {
       warnMb: 256,
+    },
+    graph: {
+      clusterThreshold: 0.5,
+      inferredThreshold: 0.7,
+      inferredMaxEdgesPerSection: 3,
     },
   };
 }
@@ -129,6 +158,9 @@ export function updateSettings(partial: Partial<Settings>): void {
   }
   if (partial.index) {
     settings.index = { ...settings.index, ...partial.index };
+  }
+  if (partial.graph) {
+    settings.graph = { ...settings.graph, ...partial.graph };
   }
 }
 

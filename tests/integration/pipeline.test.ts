@@ -67,8 +67,19 @@ function communityRows(dbPath: string): Array<[string, string]> {
   }
 }
 
-function makeSettings(vaultPath: string, dbPath: string): Settings {
-  return {
+// Deep-partial override shape for the tuning tests — only query/graph are
+// ever overridden here.
+interface SettingsOverrides {
+  query?: Partial<Settings["query"]>;
+  graph?: Partial<Settings["graph"]>;
+}
+
+function makeSettings(
+  vaultPath: string,
+  dbPath: string,
+  overrides: SettingsOverrides = {},
+): Settings {
+  const base: Settings = {
     vaultPath,
     configDir: "",
     pluginDir: "",
@@ -78,16 +89,28 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
     api: { baseUrl: "http://localhost:9999/v1", apiKey: "test-key" },
     embedding: { model: "test", dimensions: 64 },
     manifest: { filename: "_manifest.md" },
-    query: { topK: 5 },
+    query: { topK: 5, depth: 1, maxFanOut: 8, maxSeeds: 8 },
     agent: { model: "test", enableThinking: false },
     preview: { enabled: true, ttlMinutes: 30 },
     index: { warnMb: 256 },
+    graph: {
+      clusterThreshold: 0.5,
+      inferredThreshold: 0.7,
+      inferredMaxEdgesPerSection: 3,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    query: { ...base.query, ...overrides.query },
+    graph: { ...base.graph, ...overrides.graph },
   };
 }
 
 // indexer_factory: build an Indexer wired to the fake embedder + temp vault.
 async function indexerFactory(
   files: Record<string, string>,
+  overrides: SettingsOverrides = {},
 ): Promise<{ indexer: Indexer; settings: Settings; vaultDir: string }> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-indexer-"));
   const vaultDir = path.join(tmpDir, "vault");
@@ -96,7 +119,7 @@ async function indexerFactory(
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content.replace(/^\n+/, ""));
   }
-  const settings = makeSettings(vaultDir, path.join(tmpDir, "index.db"));
+  const settings = makeSettings(vaultDir, path.join(tmpDir, "index.db"), overrides);
   const fakeEmbedder = new FakeEmbedder(64);
   return { indexer: new Indexer(settings, fakeEmbedder), settings, vaultDir };
 }
@@ -292,5 +315,57 @@ describe("DegradedMode", () => {
     );
     expect(sections.length).toBeGreaterThan(0);
     expect(sections[0].node_key.endsWith("::")).toBe(true);
+  });
+});
+
+function countEdgesByKind(dbPath: string, kind: string): number {
+  const conn = new SQL.Database(fs.readFileSync(dbPath));
+  try {
+    // `kind` is a constant ('inferred') — never user input in this helper.
+    const row = conn.exec(`SELECT COUNT(*) FROM EDGES WHERE kind = '${kind}'`)[0]?.values[0]?.[0];
+    return typeof row === "number" ? row : 0;
+  } finally {
+    conn.close();
+  }
+}
+
+// The config.yaml graph: section must actually reach the build (single
+// source of truth for GraphRAG tuning). Monotonicity is guaranteed by
+// construction: a higher cosine threshold can only reduce joins/edges.
+describe("GraphConfigTuning", () => {
+  const files = {
+    "a.md": "# Alpha\n\nbloom energy fuel cells overview.\n\n## Deep\n\nNotes on the section structure.\n",
+    "b.md": "# Beta\n\nbitcoin mining halving rewards network.\n",
+  };
+
+  it("graph.cluster_threshold tunes auto-community granularity", async () => {
+    // 0.0 joins anything non-negatively-correlated (few, large communities);
+    // 0.99 only joins near-identical sections (more, smaller communities).
+    const coarse = await indexerFactory(files, { graph: { clusterThreshold: 0.0 } });
+    await coarse.indexer.build();
+    const fine = await indexerFactory(files, { graph: { clusterThreshold: 0.99 } });
+    await fine.indexer.build();
+
+    expect(count(fine.settings.dbPath, "COMMUNITIES")).toBeGreaterThanOrEqual(
+      count(coarse.settings.dbPath, "COMMUNITIES"),
+    );
+    // Every section is assigned at both granularities.
+    expect(count(coarse.settings.dbPath, "COMMUNITY_SECTIONS")).toBe(
+      count(coarse.settings.dbPath, "SECTIONS"),
+    );
+    expect(count(fine.settings.dbPath, "COMMUNITY_SECTIONS")).toBe(
+      count(fine.settings.dbPath, "SECTIONS"),
+    );
+  });
+
+  it("graph.inferred_threshold tunes the inferred-edge density", async () => {
+    const dense = await indexerFactory(files, { graph: { inferredThreshold: 0.0 } });
+    await dense.indexer.build();
+    const sparse = await indexerFactory(files, { graph: { inferredThreshold: 0.99 } });
+    await sparse.indexer.build();
+
+    expect(countEdgesByKind(sparse.settings.dbPath, "inferred")).toBeLessThanOrEqual(
+      countEdgesByKind(dense.settings.dbPath, "inferred"),
+    );
   });
 });

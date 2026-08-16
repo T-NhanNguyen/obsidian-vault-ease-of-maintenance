@@ -81,7 +81,7 @@ export async function runChat(question: string): Promise<string> {
 // session's prior turns as history (persistent chat, bounded to 15 messages).
 export async function runChatQuery(
   question: string,
-  topK: number = 5,
+  topK: number = settings.query.topK,
 ): Promise<ChatQueryResponse> {
   const capability = await detectToolCallSupport();
   if (capability === "no_tool_calls") {

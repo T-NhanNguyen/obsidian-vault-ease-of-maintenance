@@ -38,7 +38,11 @@ export class Indexer {
     this.db = new DatabaseManager(this.settings.dbPath);
     this.scanner = new Scanner(this.settings.vaultPath, parseIgnorePatterns(this.settings.ignorePatterns));
     this.chunker = new Chunker();
-    this.graph = new GraphBuilder(this.db);
+    this.graph = new GraphBuilder(this.db, {
+      // `?.` guard: partial Settings in tests degrade to module defaults.
+      inferredThreshold: this.settings.graph?.inferredThreshold,
+      inferredMaxEdgesPerSection: this.settings.graph?.inferredMaxEdgesPerSection,
+    });
     this.embedder = embedder || new Embedder(this.settings);
     this.manifestParser = new ManifestParser(this.settings.vaultPath);
   }
@@ -89,7 +93,11 @@ export class Indexer {
       if (seeds.length > 0) {
         await assignCommunities(this.db, allSections, seeds, seedEmbeddings);
       } else {
-        await ensureAutoCommunities(this.db, allSections);
+        await ensureAutoCommunities(
+          this.db,
+          allSections,
+          this.settings.graph?.clusterThreshold,
+        );
       }
 
       // Insert metadata
@@ -215,11 +223,19 @@ export class Indexer {
   // Query
   // ------------------------------------------------------------------
 
-  async query(text: string, topK: number = 5, opts?: HybridQueryOptions): Promise<SearchResult[]> {
+  async query(text: string, topK: number = this.settings.query.topK, opts?: HybridQueryOptions): Promise<SearchResult[]> {
     try {
       // Hybrid local search: cosine top-k + graph expansion over EDGES
-      // (see graph_search.ts — Phase 1 of the GraphRAG buildout).
-      return await hybridQuery(this.embedder, this.db, text, topK, opts);
+      // (see graph_search.ts — Phase 1 of the GraphRAG buildout). Settings
+      // supply the expansion defaults; explicit opts override them.
+      const hybridOpts: HybridQueryOptions = {
+        // `?.` guard: partial Settings in tests degrade to module defaults.
+        depth: this.settings.query?.depth,
+        maxFanOut: this.settings.query?.maxFanOut,
+        maxSeeds: this.settings.query?.maxSeeds,
+        ...opts,
+      };
+      return await hybridQuery(this.embedder, this.db, text, topK, hybridOpts);
     } finally {
       await this.db.close();
     }

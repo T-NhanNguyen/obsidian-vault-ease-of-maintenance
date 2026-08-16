@@ -36,6 +36,11 @@ preview:
 
 query:
   top_k: 5
+
+graph:
+  cluster_threshold: 0.5
+  inferred_threshold: 0.7
+  inferred_max_edges_per_section: 3
 `;
 
 describe("parseConfigYaml", () => {
@@ -50,6 +55,34 @@ describe("parseConfigYaml", () => {
     expect(cfg.manifestFilename).toBe("_manifest.md");
     expect(cfg.inboxFolder).toBe("");
     expect(cfg.ignorePatterns).toBe("");
+  });
+
+  it("maps the query and graph tuning sections", () => {
+    const cfg = parseConfigYaml(CONFIG_FIXTURE);
+    expect(cfg.queryTopK).toBe(5);
+    expect(cfg.queryDepth).toBe(undefined); // not in the fixture — defaults apply
+    expect(cfg.graphClusterThreshold).toBe(0.5);
+    expect(cfg.graphInferredThreshold).toBe(0.7);
+    expect(cfg.graphInferredMaxEdgesPerSection).toBe(3);
+
+    const tuned = parseConfigYaml(`
+query:
+  top_k: 10
+  depth: 2
+  max_fan_out: 12
+  max_seeds: 4
+graph:
+  cluster_threshold: 0.6
+  inferred_threshold: 0.8
+  inferred_max_edges_per_section: 5
+`);
+    expect(tuned.queryTopK).toBe(10);
+    expect(tuned.queryDepth).toBe(2);
+    expect(tuned.queryMaxFanOut).toBe(12);
+    expect(tuned.queryMaxSeeds).toBe(4);
+    expect(tuned.graphClusterThreshold).toBe(0.6);
+    expect(tuned.graphInferredThreshold).toBe(0.8);
+    expect(tuned.graphInferredMaxEdgesPerSection).toBe(5);
   });
 
   it("parses booleans, integers, and quoted strings via the mapping", () => {

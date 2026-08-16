@@ -49,7 +49,21 @@ preview:
   ttl_minutes: 30                      # pending reviews older than this are swept.
 
 query:
-  top_k: 5                             # default result count.
+  top_k: 5                             # results returned to chat / clean / sort.
+  depth: 1                             # BFS levels past the resolved seeds (hybrid search).
+  max_fan_out: 8                       # max outgoing edges followed per key per level.
+  max_seeds: 8                         # max resolver seeds to expand from.
+
+# Graph-build tuning — shapes the stored EDGES + COMMUNITIES. Highest-impact
+# knobs on GraphRAG behavior; deliberately NOT in the Settings tab.
+#   cluster_threshold: higher = fewer, larger auto-communities (drives
+#     Phase-4 report granularity).
+#   inferred_threshold: higher = leaner EDGES table (fewer cosine-derived edges).
+#   inferred_max_edges_per_section: cap on inferred edges per section.
+graph:
+  cluster_threshold: 0.5
+  inferred_threshold: 0.7
+  inferred_max_edges_per_section: 3
 
 index:
   warn_mb: 256                # warning threshold for the index file size (MB). sql.js

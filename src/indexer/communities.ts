@@ -237,13 +237,15 @@ export async function assignAutoCommunities(
 /**
  * Build-time entry for unseeded vaults: cluster every section and persist
  * the auto communities + assignments. The caller is expected to have cleared
- * the index first (build calls clearAll).
+ * the index first (build calls clearAll). The similarity threshold defaults
+ * to the module constant; callers (indexer) pass settings.graph.clusterThreshold.
  */
 export async function ensureAutoCommunities(
   db: CommunityBuildStore,
   sections: IndexableSection[],
+  similarityThreshold?: number,
 ): Promise<void> {
-  const communities = clusterSections(sections);
+  const communities = clusterSections(sections, similarityThreshold);
   for (const community of communities) {
     await db.insertCommunity({
       communityId: community.communityId,

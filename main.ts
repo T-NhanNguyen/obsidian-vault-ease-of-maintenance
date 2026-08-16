@@ -56,6 +56,15 @@ interface PluginSettings {
   // exported index exceeds it, DatabaseManager warns (sql.js builds hold ~10×
   // the file size in RAM).
   indexWarnMb: number;
+  // GraphRAG tuning — config.yaml query: + graph: sections (single source
+  // of truth; deliberately NOT in the Settings tab — advanced tuning).
+  queryTopK: number;
+  queryDepth: number;
+  queryMaxFanOut: number;
+  queryMaxSeeds: number;
+  graphClusterThreshold: number;
+  graphInferredThreshold: number;
+  graphInferredMaxEdgesPerSection: number;
 }
 
 const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -70,6 +79,13 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   manifestFilename: "_manifest.md",
   reviewContainer: "sidebar",
   indexWarnMb: 256,
+  queryTopK: 5,
+  queryDepth: 1,
+  queryMaxFanOut: 8,
+  queryMaxSeeds: 8,
+  graphClusterThreshold: 0.5,
+  graphInferredThreshold: 0.7,
+  graphInferredMaxEdgesPerSection: 3,
 };
 
 // Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
@@ -314,6 +330,17 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       index: {
         warnMb: s.indexWarnMb,
       },
+      query: {
+        topK: s.queryTopK,
+        depth: s.queryDepth,
+        maxFanOut: s.queryMaxFanOut,
+        maxSeeds: s.queryMaxSeeds,
+      },
+      graph: {
+        clusterThreshold: s.graphClusterThreshold,
+        inferredThreshold: s.graphInferredThreshold,
+        inferredMaxEdgesPerSection: s.graphInferredMaxEdgesPerSection,
+      },
     });
   }
 }
@@ -360,6 +387,17 @@ export default class VaultMaintenancePlugin extends Plugin {
       ignorePatterns: this.pluginSettings.ignorePatterns,
       manifest: {
         filename: this.pluginSettings.manifestFilename,
+      },
+      query: {
+        topK: this.pluginSettings.queryTopK,
+        depth: this.pluginSettings.queryDepth,
+        maxFanOut: this.pluginSettings.queryMaxFanOut,
+        maxSeeds: this.pluginSettings.queryMaxSeeds,
+      },
+      graph: {
+        clusterThreshold: this.pluginSettings.graphClusterThreshold,
+        inferredThreshold: this.pluginSettings.graphInferredThreshold,
+        inferredMaxEdgesPerSection: this.pluginSettings.graphInferredMaxEdgesPerSection,
       },
     });
 

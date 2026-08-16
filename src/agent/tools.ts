@@ -108,7 +108,7 @@ export function getChatSearchResults(): ChatQueryResult[] {
   return chatSearchResults;
 }
 
-export async function searchIndex(query: string, topK: number = 5): Promise<string> {
+export async function searchIndex(query: string, topK: number = settings.query.topK): Promise<string> {
   try {
     const embedder = new Embedder(settings);
     const db = new DatabaseManager(settings.dbPath);

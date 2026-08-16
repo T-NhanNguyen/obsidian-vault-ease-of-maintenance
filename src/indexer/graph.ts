@@ -40,6 +40,17 @@ const WIKILINK_PATTERN = /\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g;
 const TAG_PATTERN = /(?:^|\s)(#[a-zA-Z][a-zA-Z0-9_-]*)/g;
 const CAPITALIZED_PATTERN = /\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b/g;
 
+// Inferred-edge build knobs — config.yaml `graph:` section overrides these
+// (single source of truth: src/config.ts GraphSettings).
+const DEFAULT_INFERRED_THRESHOLD = 0.7;
+const DEFAULT_INFERRED_MAX_EDGES_PER_SECTION = 3;
+
+/** Graph-build tuning options — wired from settings.graph by the indexer. */
+export interface GraphBuildOptions {
+  inferredThreshold?: number;
+  inferredMaxEdgesPerSection?: number;
+}
+
 export class EntityExtractor {
   extract(text: string): Entity[] {
     const seen = new Set<string>();
@@ -210,7 +221,10 @@ export class EntityExtractor {
 export class GraphBuilder {
   private readonly extractor = new EntityExtractor();
 
-  constructor(private readonly db: EdgeStore) {}
+  constructor(
+    private readonly db: EdgeStore,
+    private readonly options: GraphBuildOptions = {},
+  ) {}
 
   extract(text: string): Entity[] {
     return this.extractor.extract(text);
@@ -261,7 +275,10 @@ export class GraphBuilder {
         embedding: s.embedding,
       }));
       const inferred = this.extractor.computeInferredEdges(
-        sectionsWithEmb, wikilinkEdgeKeys, 0.7, 3
+        sectionsWithEmb,
+        wikilinkEdgeKeys,
+        this.options.inferredThreshold ?? DEFAULT_INFERRED_THRESHOLD,
+        this.options.inferredMaxEdgesPerSection ?? DEFAULT_INFERRED_MAX_EDGES_PER_SECTION,
       );
       allEdges.push(...inferred);
     }
