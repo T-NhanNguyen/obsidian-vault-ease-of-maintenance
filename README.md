@@ -1,8 +1,11 @@
+> [!NOTE]
+> THIS IS STILL A HEAVY WORK IN PROGRESS. UNTILL THIS NOTICE IS DOWN, I'D ADVISE AGAINST USING THIS PLUGIN.
+
 # Vault Ease of Maintenance
 
-GraphRAG indexer + LLM-driven agents for Obsidian markdown vaults.
+~~GraphRAG indexer~~ Relational embedding index (GraphRAG is currently not achievable. Working hard on that) + LLM-driven agents for Obsidian markdown vaults.
 
-This plugin keeps an Obsidian vault easy to maintain. It builds a GraphRAG index of the notes in the vault. It uses LLM agents to clean notes, sort the inbox, and answer questions. Everything runs inside Obsidian. You do not need Python, a server, or Docker.
+This plugin keeps an Obsidian vault easy to maintain. It builds an vector search index (for now) database of the notes in the vault. It uses LLM agents to clean notes, sort the inbox, and answer questions. Everything runs inside Obsidian. You do not need Python, a server, or Docker.
 
 ## Quick Start
 
