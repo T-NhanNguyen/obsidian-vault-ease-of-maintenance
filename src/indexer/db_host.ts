@@ -6,8 +6,10 @@
 //     goes through app.vault.adapter (the vault API — this is what removes
 //     the store-review "Direct Filesystem Access" trigger that better-sqlite3
 //     caused). The worker is a real Web Worker spawned from the embedded
-//     WORKER_BUNDLE string via a Blob URL. sql-wasm.wasm is read from the
-//     plugin dir through the adapter.
+//     WORKER_BUNDLE string via a Blob URL. The sql.js wasm is EMBEDDED in
+//     the main bundle (base64, see embedded_wasm.ts) — no disk read, which
+//     is what makes store installs work (the store ships only main.js /
+//     manifest.json / styles.css).
 //   - createNodeDbHost(): the test/plain-Node path. File I/O goes through
 //     VaultIO (the fs chokepoint) and the "worker" is an in-process
 //     DbWorkerCore — sql.js is loaded from node_modules at first use.
@@ -20,8 +22,8 @@
 import * as path from "path";
 import type { DataAdapter } from "obsidian";
 import { WORKER_BUNDLE } from "@worker-bundle";
-import { settings } from "../config";
 import { errorMessage } from "../errors";
+import { getEmbeddedWasmBinary } from "./embedded_wasm";
 import { VaultIO } from "../io/vault_io";
 import type { DbMethodMap, DbMethodName, WorkerRequest, WorkerResponse } from "./db_worker/protocol";
 import { DbWorkerCore } from "./db_worker/worker_core";
@@ -305,48 +307,15 @@ export function createObsidianDbHost(
     },
   };
 
-  // Read sql-wasm.wasm from the plugin dir via the adapter. configDir and
-  // pluginDir are VAULT-RELATIVE ("configDir" is typically ".obsidian"), and
-  // adapter.readBinary/list take vault-relative paths — never route them
-  // through rel() (which requires absolute paths; mixing the two used to
-  // throw OUT_OF_SCOPE: .obsidian/plugins on every real-Obsidian build).
-  async function loadWasmBinary(): Promise<Uint8Array | null> {
-    // Primary: the plugin's own folder (manifest.dir).
-    if (settings.pluginDir) {
-      const direct = await tryReadWasm(`${settings.pluginDir}/sql-wasm.wasm`);
-      if (direct) return direct;
-    }
-    // Fallback: scan every plugin folder (covers an empty manifest.dir).
-    if (settings.configDir) {
-      const pluginsRoot = `${settings.configDir}/plugins`;
-      let pluginDirs: string[] = [];
-      try {
-        const listed = await adapter.list(pluginsRoot);
-        // adapter.list returns vault-relative full paths; normalize to bare
-        // folder names before joining back under pluginsRoot.
-        pluginDirs = [...listed.folders].map(toBareName);
-      } catch {
-        // plugins dir missing — nothing to scan; the error below still names
-        // the real problem.
-      }
-      for (const dir of pluginDirs) {
-        const found = await tryReadWasm(`${pluginsRoot}/${dir}/sql-wasm.wasm`);
-        if (found) return found;
-      }
-    }
-    throw new Error(
-      "sql.js wasm asset (sql-wasm.wasm) not found in the plugin dir. " +
-      "Reinstall the plugin — the store package must include sql-wasm.wasm next to main.js.",
-    );
-  }
-
-  async function tryReadWasm(relPath: string): Promise<Uint8Array | null> {
-    try {
-      const buffer = await adapter.readBinary(relPath);
-      return new Uint8Array(buffer);
-    } catch {
-      return null;
-    }
+  // The sql.js wasm is EMBEDDED in the main bundle at build time (base64 —
+  // see embedded_wasm.ts): the community store installer fetches only
+  // main.js / manifest.json / styles.css, so a disk-based wasm asset can
+  // never reach store installs (the 1.3.0 store failure). Embedding also
+  // deletes the whole adapter-scan class of bugs — OUT_OF_SCOPE from routing
+  // vault-relative configDir/pluginDir through rel(), missing file, stale
+  // copy — because there is no disk lookup at all.
+  async function loadWasmBinary(): Promise<Uint8Array> {
+    return getEmbeddedWasmBinary();
   }
 
   const onIndexUpgraded = hooks.onIndexUpgraded;

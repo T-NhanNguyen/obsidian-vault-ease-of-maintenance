@@ -13,6 +13,10 @@ export default defineConfig({
       // Build-time virtual module (worker bundle string); see
       // tests/fixtures/worker_bundle_stub.ts.
       "@worker-bundle": "/tests/fixtures/worker_bundle_stub.ts",
+      // Build-time embedded wasm (esbuild embeddedWasmPlugin inlines the
+      // sql.js wasm as a base64 string); see tests/fixtures/wasm_stub.ts
+      // and src/indexer/embedded_wasm.ts.
+      "sql.js/dist/sql-wasm.wasm": "/tests/fixtures/wasm_stub.ts",
       // The obsidian npm package ships types only (empty "main"), so Vite
       // cannot resolve it. Alias to a stub for tests; the plugin build keeps
       // "obsidian" as an esbuild external (real module at runtime).

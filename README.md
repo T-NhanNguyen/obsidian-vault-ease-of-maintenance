@@ -44,15 +44,22 @@ If no `_manifest.md` exists, the plugin derives one from the index. Review it be
 
 ### 5. Install the plugin
 
-1. Run `npm run build` in the repo root. This writes `main.js` and `sql-wasm.wasm`.
+1. Run `npm run build` in the repo root. This writes `main.js` (with the
+   sql.js WASM engine embedded inside it) and `sql-wasm.wasm` (kept as a
+   convenience asset for local installs; not required).
 2. Create the folder `<vault>/.obsidian/plugins/obsidian-vault-ease-of-maintenance/`.
-3. Copy `main.js`, `manifest.json`, `styles.css`, **and `sql-wasm.wasm`** into that folder.
-   Easiest: run `./build-plugin.sh <vault-path>`.
+3. Copy `main.js`, `manifest.json`, and `styles.css` into that folder.
+   `sql-wasm.wasm` is optional — the engine is embedded in `main.js`, so the
+   standard three-file set (exactly what the community store installs)
+   works.
+   Easiest: run `./build-plugin.sh <vault-path>` (copies all four files).
 4. Enable the plugin in Obsidian: Settings → Community Plugins.
 
 **Plugin-store installs work out of the box**: the SQLite engine is sql.js
-(SQLite compiled to WebAssembly) — no native module, no `node_modules` in the
-plugin folder. On the first run after upgrading from a version that used
+(SQLite compiled to WebAssembly), embedded inside `main.js` — no native
+module, no `node_modules` in the plugin folder, and no extra asset to ship
+(the store installer fetches exactly `main.js`, `manifest.json`,
+`styles.css`). On the first run after upgrading from a version that used
 the native `better-sqlite3` engine, the plugin retires the old index to
 `.note-maintainer/legacy/` and rebuilds it once (the index is derived data;
 Obsidian notifies you).

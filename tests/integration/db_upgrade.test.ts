@@ -17,7 +17,6 @@ import { describe, it, expect, beforeAll, afterEach } from "vitest";
 import * as path from "path";
 import initSqlJs, { Database, SqlJsStatic } from "sql.js";
 import { DatabaseManager } from "../../src/indexer/db";
-import { updateSettings } from "../../src/config";
 import { DB_ENGINE_VERSION } from "../../src/indexer/db_worker/sqljs_database";
 import { createObsidianDbHost } from "../../src/indexer/db_host";
 import type { DbChannel, DbFileIO, DbHost } from "../../src/indexer/db_host";
@@ -295,74 +294,48 @@ describe("Upgrade reentrancy guard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Wasm asset loading (loadWasmBinary) — regression for the live-Obsidian
-// "OUT_OF_SCOPE: DB path outside the vault: .obsidian/plugins" build failure:
-// configDir/pluginDir are vault-RELATIVE and must never be routed through
-// rel() (which requires absolute paths).
+// Wasm asset loading (loadWasmBinary) — the sql.js wasm is EMBEDDED in the
+// main bundle at build time (zkdavis obsidian-smart-vault pattern, handoff
+// 2026-08-16). The Obsidian community store ships only main.js /
+// manifest.json / styles.css, so a disk-based wasm asset can never reach
+// store installs; loadWasmBinary must come purely from the embedded base64
+// and never touch the adapter. (Vitest aliases the wasm import to
+// tests/fixtures/wasm_stub.ts — the base64 of a minimal valid wasm header.)
 // ---------------------------------------------------------------------------
 
-describe("Obsidian DbHost wasm loading", () => {
-  const wasmBytes = new Uint8Array([1, 2, 3, 4]);
-
-  afterEach(() => {
-    updateSettings({ configDir: "", pluginDir: "" });
-  });
-
-  it("uses the plugin's own dir first and never runs the plugin scan", async () => {
-    let listCalls = 0;
+describe("Obsidian DbHost wasm loading (embedded)", () => {
+  it("returns the embedded wasm bytes and never touches the adapter", async () => {
+    let adapterCalls = 0;
     const adapter = {
-      readBinary: async (p: string) => {
-        expect(p).toBe(".obsidian/plugins/my-plugin/sql-wasm.wasm");
-        return wasmBytes.buffer as ArrayBuffer;
+      readBinary: async () => {
+        adapterCalls++;
+        throw new Error("adapter.readBinary must not be called");
       },
       list: async () => {
-        listCalls++;
+        adapterCalls++;
         return { files: [], folders: [] };
       },
     } as unknown as Parameters<typeof createObsidianDbHost>[0];
-    updateSettings({ configDir: ".obsidian", pluginDir: ".obsidian/plugins/my-plugin" });
 
     const host = createObsidianDbHost(adapter, "/vault");
     const wasm = await host.loadWasmBinary();
-    expect(wasm).toEqual(wasmBytes);
-    expect(listCalls).toBe(0);
+    expect(adapterCalls).toBe(0);
+    // Store-safe embed: the decoded stub is a valid wasm header — magic
+    // \0asm + version 1 — proving the base64 decode path end to end.
+    expect(wasm).not.toBeNull();
+    expect([...wasm!.subarray(0, 5)]).toEqual([0, 0x61, 0x73, 0x6d, 1]);
+    expect(wasm!.byteLength).toBe(8);
   });
 
-  it("scans every plugin folder when manifest.dir is empty (no OUT_OF_SCOPE)", async () => {
-    const adapter = {
-      readBinary: async (p: string) => {
-        // Vault-relative full path — never routed through rel().
-        expect(p).toBe(".obsidian/plugins/other-plugin/sql-wasm.wasm");
-        return wasmBytes.buffer as ArrayBuffer;
-      },
-      list: async (p: string) => {
-        expect(p).toBe(".obsidian/plugins");
-        return {
-          files: [],
-          folders: [".obsidian/plugins/my-plugin", ".obsidian/plugins/other-plugin"],
-        };
-      },
-    } as unknown as Parameters<typeof createObsidianDbHost>[0];
-    updateSettings({ configDir: ".obsidian", pluginDir: "" });
-
-    const host = createObsidianDbHost(adapter, "/vault");
-    const wasm = await host.loadWasmBinary();
-    expect(wasm).toEqual(wasmBytes);
-  });
-
-  it("throws a clear not-found error (not OUT_OF_SCOPE) when no plugin has the wasm", async () => {
-    const adapter = {
-      readBinary: async () => {
-        throw new Error("ENOENT");
-      },
-      list: async () => ({
-        files: [],
-        folders: [".obsidian/plugins/my-plugin"],
-      }),
-    } as unknown as Parameters<typeof createObsidianDbHost>[0];
-    updateSettings({ configDir: ".obsidian", pluginDir: "" });
-
-    const host = createObsidianDbHost(adapter, "/vault");
-    await expect(host.loadWasmBinary()).rejects.toThrow("sql.js wasm asset");
+  it("repeated calls share the cached embedded bytes (decode once)", async () => {
+    const host = createObsidianDbHost(
+      {} as Parameters<typeof createObsidianDbHost>[0],
+      "/vault",
+    );
+    const first = await host.loadWasmBinary();
+    const second = await host.loadWasmBinary();
+    expect(second).toBe(first);
+    expect(first).not.toBeNull();
+    expect(second!.byteLength).toBe(8);
   });
 });
