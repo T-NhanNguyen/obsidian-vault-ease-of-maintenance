@@ -11,6 +11,7 @@ import { parseIgnorePatterns, pathMatchesPatterns } from "./engine";
 import * as toolImpl from "./tools";
 import { TocReader } from "../indexer/manifest";
 import { Indexer } from "../indexer/indexer";
+import { ChatReportLlm } from "../indexer/community_reports";
 import { DatabaseManager } from "../indexer/db";
 
 // ---------------------------------------------------------------------------
@@ -30,7 +31,7 @@ export async function runBuild(vaultPath: string): Promise<string> {
     console.warn("  [build] No _manifest.md found — building non-manifest index first, then deriving one.");
   }
 
-  const indexer = new Indexer(settings);
+  const indexer = new Indexer(settings, undefined, new ChatReportLlm());
   await indexer.build();
   const files = indexer.scanner.scan().length;
 
@@ -38,7 +39,7 @@ export async function runBuild(vaultPath: string): Promise<string> {
     try {
       await generateManifest(vaultPath);
       manifestGenerated = true;
-      const indexer2 = new Indexer(settings);
+      const indexer2 = new Indexer(settings, undefined, new ChatReportLlm());
       await indexer2.build();
     } catch (e) {
       console.warn(`  [build] Manifest generation failed (${errorMessage(e)}) — index remains degraded.`);

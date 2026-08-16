@@ -14,6 +14,8 @@
 // the engine, the protocol, and the facade cannot drift.
 
 import type {
+  CommunityReportRow,
+  CommunityReportWriteInput,
   CommunityRow,
   CommunityWriteInput,
   Edge,
@@ -65,6 +67,10 @@ export interface DbMethodMap {
   assignSectionToCommunity: { args: [string, string]; result: void };
   getCommunityForSection: { args: [string]; result: string | null };
   clearCommunityAssignments: { args: []; result: void };
+  upsertCommunityReport: { args: [CommunityReportWriteInput]; result: void };
+  getCommunityReport: { args: [string]; result: CommunityReportRow | null };
+  getAllCommunityReports: { args: []; result: CommunityReportRow[] };
+  getSectionsForCommunity: { args: [string]; result: SectionSearchRow[] };
   insertMeta: { args: [string, string]; result: number };
   getLatestMeta: { args: []; result: MetaRow | null };
   computeFileRollup: { args: [string]; result: string | null };

@@ -13,6 +13,7 @@ import type { SqlJsConfig, SqlJsStatic } from "sql.js";
 import type { DbMethodName } from "./protocol";
 import { SqlJsDatabase } from "./sqljs_database";
 import type {
+  CommunityReportWriteInput,
   CommunityWriteInput,
   Edge,
   EntityWriteInput,
@@ -55,6 +56,10 @@ const METHOD_DISPATCH: Record<string, DbMethodFn> = {
   assignSectionToCommunity: (db, args) => db.assignSectionToCommunity(args[0] as string, args[1] as string),
   getCommunityForSection: (db, args) => db.getCommunityForSection(args[0] as string),
   clearCommunityAssignments: (db) => db.clearCommunityAssignments(),
+  upsertCommunityReport: (db, args) => db.upsertCommunityReport(args[0] as CommunityReportWriteInput),
+  getCommunityReport: (db, args) => db.getCommunityReport(args[0] as string),
+  getAllCommunityReports: (db) => db.getAllCommunityReports(),
+  getSectionsForCommunity: (db, args) => db.getSectionsForCommunity(args[0] as string),
   insertMeta: (db, args) => db.insertMeta(args[0] as string, args[1] as string),
   getLatestMeta: (db) => db.getLatestMeta(),
   computeFileRollup: (db, args) => db.computeFileRollup(args[0] as string),

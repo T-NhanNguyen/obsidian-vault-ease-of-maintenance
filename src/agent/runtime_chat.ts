@@ -20,6 +20,8 @@ import {
 import { Embedder } from "../indexer/embedder";
 import { hybridQuery } from "../indexer/graph_search";
 import { DatabaseManager } from "../indexer/db";
+import { ChatReportLlm, globalQuery, isOverviewQuestion } from "../indexer/community_reports";
+import type { GlobalQueryResult } from "../indexer/community_reports";
 import type { SearchResult } from "../indexer/db";
 import type { ChatQueryResponse } from "../types";
 
@@ -85,6 +87,35 @@ export async function runChatQuery(
   question: string,
   topK: number = settings.query.topK,
 ): Promise<ChatQueryResponse> {
+  // Global mode first: overview questions ("what is this vault about?") are
+  // answered from community summaries when reports exist — the Phase-4
+  // differentiator. Degrades to the capability-gated local path below when
+  // reports are absent (offline build / LLM failure) — never hangs.
+  if (isOverviewQuestion(question)) {
+    const embedder = new Embedder(settings);
+    const db = new DatabaseManager(settings.dbPath);
+    let result: GlobalQueryResult;
+    try {
+      result = await globalQuery(
+        embedder,
+        db,
+        new ChatReportLlm({ enableThinking: thinkingEnabledFor("chat") }),
+        question,
+      );
+    } finally {
+      await db.close();
+    }
+    if (result.mode === "global") {
+      const answer = result.answer;
+      appendChatTurn(settings.vaultPath, "user", question);
+      appendChatTurn(settings.vaultPath, "assistant", answer);
+      // Community reports are not file sources — the sources list stays empty
+      // (renderSources skips it) and the answer stands alone.
+      return { answer, results: [], citationMap: {} };
+    }
+    // Degraded — fall through to the normal local path.
+  }
+
   const capability = await detectToolCallSupport();
   if (capability === "no_tool_calls") {
     return runChatQueryFallback(question, topK);

@@ -50,6 +50,15 @@ export interface CommunityRow {
   label: string | null;
 }
 
+/** A COMMUNITY_REPORTS row — an LLM-written summary of a community (Phase 4). */
+export interface CommunityReportRow {
+  community_id: string;
+  report: string | null;
+  model: string | null;
+  tokens: number | null;
+  built_at: string | null;
+}
+
 export interface MetaRow {
   snapshot_id: number;
   built_at: string;
@@ -99,6 +108,16 @@ export interface CommunityWriteInput {
   seedSource?: string;
   seed_source?: string;
   label?: string;
+}
+
+export interface CommunityReportWriteInput {
+  communityId?: string;
+  community_id?: string;
+  report?: string;
+  model?: string;
+  tokens?: number;
+  builtAt?: string;
+  built_at?: string;
 }
 
 export interface EntityWriteInput {

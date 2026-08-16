@@ -4,12 +4,14 @@
 import * as crypto from "crypto";
 import * as path from "path";
 import { settings, Settings } from "../config";
+import { errorMessage } from "../errors";
 import { VaultIO } from "../io/vault_io";
 import { parseIgnorePatterns } from "../agent/engine";
 import { Chunker, SectionInfo } from "./chunker";
 import { DatabaseManager, FileWriteInput, SearchResult, SectionWriteInput } from "./db";
 import { hybridQuery, HybridQueryOptions } from "./graph_search";
 import { assignCommunities, computeSeedEmbeddings, ensureAutoCommunities } from "./communities";
+import { generateCommunityReports, ReportLlm } from "./community_reports";
 import { Embedder, IEmbedder } from "./embedder";
 import { GraphBuilder } from "./graph";
 import { ManifestParser } from "./manifest";
@@ -31,8 +33,9 @@ export class Indexer {
   embedder: IEmbedder;
   manifestParser: ManifestParser;
   private io: VaultIO;
+  private readonly reportLlm?: ReportLlm;
 
-  constructor(customSettings?: Settings, embedder?: IEmbedder) {
+  constructor(customSettings?: Settings, embedder?: IEmbedder, reportLlm?: ReportLlm) {
     this.settings = customSettings || settings;
     this.io = new VaultIO(this.settings.vaultPath);
     this.db = new DatabaseManager(this.settings.dbPath);
@@ -45,6 +48,7 @@ export class Indexer {
     });
     this.embedder = embedder || new Embedder(this.settings);
     this.manifestParser = new ManifestParser(this.settings.vaultPath);
+    this.reportLlm = reportLlm;
   }
 
   // ------------------------------------------------------------------
@@ -98,6 +102,22 @@ export class Indexer {
           allSections,
           this.settings.graph?.clusterThreshold,
         );
+      }
+
+      // Community reports — LLM-written per-community summaries for global
+      // mode (Phase 4 of the GraphRAG buildout). Generated only when an LLM
+      // was wired in (the production orchestrator passes ChatReportLlm; the
+      // test harness passes none). Failure is non-fatal: reports stay absent
+      // (or partial) and the index remains usable — global mode then degrades
+      // to local retrieval.
+      if (this.reportLlm) {
+        try {
+          await generateCommunityReports(this.db, this.reportLlm);
+        } catch (e) {
+          console.warn(
+            `[build] Community report generation failed (${errorMessage(e)}) — global mode unavailable.`,
+          );
+        }
       }
 
       // Insert metadata

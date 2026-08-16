@@ -29,6 +29,8 @@ import { errorMessage } from "../errors";
 import { getDefaultDbHost, DbHost, DbChannel } from "./db_host";
 import type { DbMethodMap, DbMethodName } from "./db_worker/protocol";
 import type {
+  CommunityReportRow,
+  CommunityReportWriteInput,
   CommunityRow,
   CommunityWriteInput,
   Edge,
@@ -53,6 +55,8 @@ import type {
 } from "./db_worker/types";
 
 export type {
+  CommunityReportRow,
+  CommunityReportWriteInput,
   CommunityRow,
   CommunityWriteInput,
   Edge,
@@ -398,6 +402,23 @@ export class DatabaseManager {
 
   async clearCommunityAssignments(): Promise<void> {
     await this.callDb("clearCommunityAssignments");
+  }
+
+  async upsertCommunityReport(report: CommunityReportWriteInput): Promise<void> {
+    await this.callDb("upsertCommunityReport", report);
+  }
+
+  async getCommunityReport(communityId: string): Promise<CommunityReportRow | null> {
+    return this.callDb("getCommunityReport", communityId);
+  }
+
+  async getAllCommunityReports(): Promise<CommunityReportRow[]> {
+    return this.callDb("getAllCommunityReports");
+  }
+
+  /** The member sections of a community (no embedding) — report-generation input. */
+  async getSectionsForCommunity(communityId: string): Promise<SectionSearchRow[]> {
+    return this.callDb("getSectionsForCommunity", communityId);
   }
 
   async insertMeta(vaultVersion: string, manifestHash: string = ""): Promise<number> {

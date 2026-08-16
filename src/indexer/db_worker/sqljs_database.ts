@@ -25,6 +25,8 @@ import type { Database, SqlJsStatic, Statement, SqlValue } from "sql.js";
 import { blobToFloats, floatsToBlob, rankByCosine } from "../embedding";
 import type { EmbeddingRow } from "../embedding";
 import {
+  CommunityReportRow,
+  CommunityReportWriteInput,
   CommunityRow,
   CommunityWriteInput,
   Edge,
@@ -663,6 +665,59 @@ export class SqlJsDatabase {
   clearCommunityAssignments(): void {
     this.conn.run("DELETE FROM COMMUNITY_SECTIONS");
     this.dirty = true;
+  }
+
+  // ------------------------------------------------------------------
+  // Community report operations (Phase 4 — LLM-written summaries)
+  // ------------------------------------------------------------------
+
+  upsertCommunityReport(report: CommunityReportWriteInput): void {
+    this.conn.run(
+      `INSERT OR REPLACE INTO COMMUNITY_REPORTS
+       (community_id, report, model, tokens, built_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        report.communityId || report.community_id || "",
+        report.report || "",
+        report.model || "",
+        typeof report.tokens === "number" ? report.tokens : null,
+        report.builtAt || report.built_at || new Date().toISOString(),
+      ],
+    );
+    this.dirty = true;
+  }
+
+  getCommunityReport(communityId: string): CommunityReportRow | null {
+    return queryOne<CommunityReportRow>(
+      this.conn.prepare("SELECT * FROM COMMUNITY_REPORTS WHERE community_id = ?"),
+      [communityId],
+    );
+  }
+
+  getAllCommunityReports(): CommunityReportRow[] {
+    return queryAll<CommunityReportRow>(
+      this.conn.prepare("SELECT * FROM COMMUNITY_REPORTS ORDER BY community_id"),
+    );
+  }
+
+  /**
+   * The member sections of a community (joined with FILES, no embedding) —
+   * the input to report generation. Deterministic: ordered by node_key.
+   */
+  getSectionsForCommunity(communityId: string): SectionSearchRow[] {
+    return queryAll<SectionSearchRow>(
+      this.conn.prepare(`
+        SELECT s.node_key, s.file_id, s.heading_path, s.heading_text,
+               s.line_start, s.line_end, s.text, s.content_hash,
+               f.path, f.title, f.content_type, f.rollup_summary
+        FROM COMMUNITY_SECTIONS cs
+        JOIN SECTIONS s ON cs.section_key = s.node_key
+        JOIN FILES f ON s.file_id = f.file_id
+        WHERE cs.community_id = ?
+        ORDER BY s.node_key
+      `),
+      [communityId],
+    );
   }
 
   // ------------------------------------------------------------------
