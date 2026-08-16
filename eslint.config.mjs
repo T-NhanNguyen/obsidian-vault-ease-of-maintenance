@@ -24,4 +24,12 @@ export default defineConfig([
       },
     },
   },
+  {
+    // Hard ceiling: no source file may exceed 1000 physical lines (handoff
+    // 2026-08-15 isolation refactor). Keep every file under the cap — the
+    // lint gate in tests/lint/lint_gate.test.ts enforces a 0-warning budget.
+    rules: {
+      "max-lines": ["warn", { max: 1000 }],
+    },
+  },
 ]);

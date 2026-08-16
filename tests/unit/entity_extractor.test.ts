@@ -2,7 +2,7 @@
 // Ported from tests/unit/test_entity_extractor.py
 
 import { describe, it, expect } from "vitest";
-import { EntityExtractor } from "../../src/indexer/entity_extractor";
+import { EntityExtractor } from "../../src/indexer/graph";
 import { Chunker } from "../../src/indexer/chunker";
 import { Scanner } from "../../src/indexer/scanner";
 import * as path from "path";

@@ -246,20 +246,24 @@ describe("apply_edits per-op matrix (TEST-04)", () => {
 });
 
 describe("getWikilinkEdges row casing (TEST-05)", () => {
-  it("returns snake_case EdgeRow fields, not camelCase Edge casts", () => {
+  it("returns snake_case EdgeRow fields, not camelCase Edge casts", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nm-db-"));
     const db = new DatabaseManager(path.join(tmpDir, "index.db"));
-    db.initialize();
-    db.insertEdges([{ srcKey: "f_0001", dstKey: "f_0002", kind: "wikilink", weight: 1 }]);
-    const rows = db.getWikilinkEdges("f_0001");
-    expect(rows).toHaveLength(1);
-    const row = rows[0];
-    expect(row.src_key).toBe("f_0001");
-    expect(row.dst_key).toBe("f_0002");
-    expect(row.kind).toBe("wikilink");
-    expect(row.weight).toBe(1);
-    // The old `as Edge[]` cast mapped snake_case rows onto camelCase fields,
-    // leaving srcKey undefined — pin that regression so it cannot return.
-    expect(Object.prototype.hasOwnProperty.call(row, "srcKey")).toBe(false);
+    await db.initialize();
+    try {
+      await db.insertEdges([{ srcKey: "f_0001", dstKey: "f_0002", kind: "wikilink", weight: 1 }]);
+      const rows = await db.getWikilinkEdges("f_0001");
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      expect(row.src_key).toBe("f_0001");
+      expect(row.dst_key).toBe("f_0002");
+      expect(row.kind).toBe("wikilink");
+      expect(row.weight).toBe(1);
+      // The old `as Edge[]` cast mapped snake_case rows onto camelCase fields,
+      // leaving srcKey undefined — pin that regression so it cannot return.
+      expect(Object.prototype.hasOwnProperty.call(row, "srcKey")).toBe(false);
+    } finally {
+      await db.close();
+    }
   });
 });

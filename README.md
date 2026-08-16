@@ -44,12 +44,18 @@ If no `_manifest.md` exists, the plugin derives one from the index. Review it be
 
 ### 5. Install the plugin
 
-1. Run `npm run build` in the repo root. This writes `main.js`.
+1. Run `npm run build` in the repo root. This writes `main.js` and `sql-wasm.wasm`.
 2. Create the folder `<vault>/.obsidian/plugins/obsidian-vault-ease-of-maintenance/`.
-3. Copy `main.js`, `manifest.json`, `styles.css`, **and the `node_modules` folder** into that folder. The Build command needs `better-sqlite3` (the SQLite binding) and it is **not** shipped with the build — if it is missing, Build fails with
-   `Cannot find module 'better-sqlite3' (require stack: electron/js2c/renderer_init)`.
-   Easiest: run `./build-plugin.sh <vault-path>` — it builds and installs everything, including `node_modules`.
+3. Copy `main.js`, `manifest.json`, `styles.css`, **and `sql-wasm.wasm`** into that folder.
+   Easiest: run `./build-plugin.sh <vault-path>`.
 4. Enable the plugin in Obsidian: Settings → Community Plugins.
+
+**Plugin-store installs work out of the box**: the SQLite engine is sql.js
+(SQLite compiled to WebAssembly) — no native module, no `node_modules` in the
+plugin folder. On the first run after upgrading from a version that used
+the native `better-sqlite3` engine, the plugin retires the old index to
+`.note-maintainer/legacy/` and rebuilds it once (the index is derived data;
+Obsidian notifies you).
 
 ## Commands
 
@@ -93,6 +99,7 @@ See `config.example.yaml`. Key settings:
 - `preview.enabled` — review-before-write for clean.
 - `preview.ttl_minutes` — how long a pending review stays valid.
 - `query.top_k` — default result count.
+- `index.warn_mb` — warn (in the devtools log) when the index file exceeds this size. sql.js holds ~10× the file size in RAM while building, so a large index is also a RAM event.
 
 ## Exclusion
 
@@ -105,7 +112,9 @@ Every file operation in the plugin routes through one synchronous confinement la
 1. **Path normalization** — absolute paths and parent (`..`) traversal are rejected.
 2. **Realpath verification** — the deepest existing ancestor of a target must resolve at-or-inside the vault root, which defeats symlink escapes (a symlink inside the vault pointing outside).
 
-The plugin writes only inside the vault: the index at `.note-maintainer/index.db`, pending reviews at `.note-maintainer/pending`, the sort journal at `.note-maintainer/sort-journal.jsonl`, the active chat session at `.note-maintainer/chat/session-*.jsonl` (one per chat tab, deleted when the tab closes), `.bak` backups beside edited notes, and atomic `.tmp-*` files beside their targets. Plugin settings are stored by Obsidian via `loadData`. The only native module, `better-sqlite3`, opens the DB path inside the vault (verified via `VaultIO.absPath`); it is the documented exception.
+The plugin writes only inside the vault: the index at `.note-maintainer/index.db`, pending reviews at `.note-maintainer/pending`, the sort journal at `.note-maintainer/sort-journal.jsonl`, the active chat session at `.note-maintainer/chat/session-*.jsonl` (one per chat tab, deleted when the tab closes), `.bak` backups beside edited notes, and atomic `.tmp-*` files beside their targets. Plugin settings are stored by Obsidian via `loadData`.
+
+The index is read and written through Obsidian's vault adapter (`app.vault.adapter`), never through a native module or a raw path. The sql.js engine runs inside a disposable Web Worker that is spawned per GraphRAG execution and terminated when the execution finishes — the worker frees the WASM heap, which sql.js never shrinks in-process.
 
 ## Version control (git-managed vaults)
 
@@ -134,7 +143,9 @@ The chat agent auto-detects at startup whether the configured model can emit too
 | `src/indexer/chunker.ts` | Splits notes into header sections. |
 | `src/indexer/embedder.ts` | Calls the embeddings API. |
 | `src/indexer/entity_extractor.ts` | Extracts wikilinks, tags, and phrases. |
-| `src/indexer/db.ts` | SQLite index (better-sqlite3). |
+| `src/indexer/db.ts` | Async facade — the only DB entry point (sql.js + disposable worker). |
+| `src/indexer/db_worker/` | sql.js engine, typed worker protocol, and the worker bundle. |
+| `src/indexer/db_host.ts` | Main-thread host: vault-adapter I/O, browser worker, wasm loading. |
 | `src/indexer/manifest.ts` | Parses `_manifest.md`. |
 | `src/indexer/indexer.ts` | Orchestrates the indexing pipeline. |
 | `src/agent/engine.ts` | Deterministic primitives: file registry, validators, journal, receipts. |

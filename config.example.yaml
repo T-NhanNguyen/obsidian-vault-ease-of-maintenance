@@ -50,3 +50,8 @@ preview:
 
 query:
   top_k: 5                             # default result count.
+
+index:
+  warn_mb: 256                # warning threshold for the index file size (MB). sql.js
+                              # holds ~10× the file size in RAM while building — warn
+                              # before silent memory surprises on large vaults.

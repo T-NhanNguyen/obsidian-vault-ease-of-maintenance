@@ -7,21 +7,12 @@ import { settings, Settings } from "../config";
 import { VaultIO } from "../io/vault_io";
 import { parseIgnorePatterns } from "../agent/engine";
 import { Chunker, SectionInfo } from "./chunker";
-import { DatabaseManager, Edge, FileWriteInput, SearchResult, SectionWriteInput } from "./db";
+import { DatabaseManager, FileWriteInput, SearchResult, SectionWriteInput } from "./db";
+import { assignCommunities, computeSeedEmbeddings } from "./communities";
 import { Embedder, IEmbedder } from "./embedder";
-import { EntityExtractor } from "./entity_extractor";
-import { CommunitySeed, ManifestParser } from "./manifest";
+import { GraphBuilder } from "./graph";
+import { ManifestParser } from "./manifest";
 import { FileInfo, Scanner } from "./scanner";
-
-// Section passed around during indexing — superset of the shapes produced by
-// the chunker and read back from the DB (SectionSummary).
-interface IndexableSection {
-  nodeKey?: string;
-  fileId?: string;
-  headingPath?: string | null;
-  text?: string | null;
-  embedding?: number[] | null;
-}
 
 // Journal replay entry — journal rows written by the sort pipeline.
 interface JournalEntryRecord {
@@ -35,7 +26,7 @@ export class Indexer {
   db: DatabaseManager;
   scanner: Scanner;
   chunker: Chunker;
-  entityExtractor: EntityExtractor;
+  graph: GraphBuilder;
   embedder: IEmbedder;
   manifestParser: ManifestParser;
   private io: VaultIO;
@@ -44,10 +35,9 @@ export class Indexer {
     this.settings = customSettings || settings;
     this.io = new VaultIO(this.settings.vaultPath);
     this.db = new DatabaseManager(this.settings.dbPath);
-    this.db.initialize();
     this.scanner = new Scanner(this.settings.vaultPath, parseIgnorePatterns(this.settings.ignorePatterns));
     this.chunker = new Chunker();
-    this.entityExtractor = new EntityExtractor();
+    this.graph = new GraphBuilder(this.db);
     this.embedder = embedder || new Embedder(this.settings);
     this.manifestParser = new ManifestParser(this.settings.vaultPath);
   }
@@ -57,53 +47,49 @@ export class Indexer {
   // ------------------------------------------------------------------
 
   async build(): Promise<void> {
-    this.db.initialize();
-    this.db.clearAll();
+    try {
+      await this.db.initialize();
+      await this.db.clearAll();
 
-    const manifestPath = this.manifestParser.findManifest();
-    const seeds = this.manifestParser.getCommunitySeeds(manifestPath);
-    const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
-    const manifestHash = this.manifestParser.hashManifest(manifestPath);
+      const manifestPath = this.manifestParser.findManifest();
+      const seeds = this.manifestParser.getCommunitySeeds(manifestPath);
+      const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
+      const manifestHash = this.manifestParser.hashManifest(manifestPath);
 
-    // Insert manifest-based communities
-    for (const seed of seeds) {
-      this.db.insertCommunity({
-        communityId: seed.communityId,
-        seedSource: seed.seedSource,
-        label: seed.label,
-      });
-    }
-
-    // Seed embedding for community assignment
-    const seedEmbeddings: Map<string, number[]> = new Map();
-    for (const seed of seeds) {
-      const seedText = seed.seedText || seed.label;
-      try {
-        seedEmbeddings.set(seed.communityId, await this.embedder.embed(seedText));
-      } catch {
-        seedEmbeddings.set(seed.communityId, []);
+      // Insert manifest-based communities
+      for (const seed of seeds) {
+        await this.db.insertCommunity({
+          communityId: seed.communityId,
+          seedSource: seed.seedSource,
+          label: seed.label,
+        });
       }
+
+      // Seed embedding for community assignment
+      const seedEmbeddings = await computeSeedEmbeddings(this.embedder, seeds);
+
+      // Scan and index files
+      const files = this.scanner.scan();
+      const filePaths = new Set(files.map(f => f.path));
+      const allSections: SectionInfo[] = [];
+
+      for (const fileInfo of files) {
+        if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
+        const sections = await this.indexFile(fileInfo, filePaths, contentTypeDefaults);
+        allSections.push(...sections);
+      }
+
+      // Compute edges
+      await this.graph.computeAllEdges(allSections, filePaths);
+
+      // Assign sections to communities
+      await assignCommunities(this.db, allSections, seeds, seedEmbeddings);
+
+      // Insert metadata
+      await this.db.insertMeta(`vault:${files.length}files`, manifestHash);
+    } finally {
+      await this.db.close();
     }
-
-    // Scan and index files
-    const files = this.scanner.scan();
-    const filePaths = new Set(files.map(f => f.path));
-    const allSections: SectionInfo[] = [];
-
-    for (const fileInfo of files) {
-      if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
-      const sections = await this.indexFile(fileInfo, filePaths, contentTypeDefaults);
-      allSections.push(...sections);
-    }
-
-    // Compute edges
-    await this.computeAllEdges(allSections, filePaths);
-
-    // Assign sections to communities
-    this.assignCommunities(allSections, seeds, seedEmbeddings);
-
-    // Insert metadata
-    this.db.insertMeta(`vault:${files.length}files`, manifestHash);
   }
 
   // ------------------------------------------------------------------
@@ -111,56 +97,63 @@ export class Indexer {
   // ------------------------------------------------------------------
 
   async incremental(): Promise<void> {
-    this.db.initialize();
-    const files = this.scanner.scan();
-    const changed = files.filter(f => this.db.hasFileChanged(f));
-    if (changed.length === 0) return;
-
-    const filePaths = new Set(files.map(f => f.path));
-    const manifestPath = this.manifestParser.findManifest();
-    const seeds = this.manifestParser.getCommunitySeeds(manifestPath);
-    const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
-    const manifestHash = this.manifestParser.hashManifest(manifestPath);
-
-    // Check if manifest changed
-    const meta = this.db.getLatestMeta();
-    const oldManifestHash = meta ? (meta.manifest_hash || "") : "";
-    const manifestChanged = oldManifestHash !== manifestHash;
-
-    if (manifestChanged) {
-      this.db.clearCommunityAssignments();
-      for (const seed of seeds) {
-        this.db.insertCommunity({
-          communityId: seed.communityId,
-          seedSource: seed.seedSource,
-          label: seed.label,
-        });
+    try {
+      await this.db.initialize();
+      const files = this.scanner.scan();
+      const changed: FileInfo[] = [];
+      for (const f of files) {
+        if (await this.db.hasFileChanged(f)) changed.push(f);
       }
-    }
+      if (changed.length === 0) return;
 
-    const changedSections: SectionInfo[] = [];
-    for (const fileInfo of changed) {
-      if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
-      this.db.retireSections(fileInfo.path);
-      this.db.deleteEdgesForFile(fileInfo.path);
-      const sections = await this.indexFile(fileInfo, filePaths, contentTypeDefaults);
-      changedSections.push(...sections);
-    }
+      const filePaths = new Set(files.map(f => f.path));
+      const manifestPath = this.manifestParser.findManifest();
+      const seeds = this.manifestParser.getCommunitySeeds(manifestPath);
+      const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
+      const manifestHash = this.manifestParser.hashManifest(manifestPath);
 
-    // Recompute edges for affected files
-    if (changedSections.length > 0) {
-      const changedFileIds = new Set(changedSections.map(s => s.fileId));
-      const allSections = this.db.getAllSections();
-      await this.computeEdgesForFiles(changedSections, changedFileIds, allSections, filePaths);
-    }
+      // Check if manifest changed
+      const meta = await this.db.getLatestMeta();
+      const oldManifestHash = meta ? (meta.manifest_hash || "") : "";
+      const manifestChanged = oldManifestHash !== manifestHash;
 
-    // Re-assign communities if manifest changed
-    if (manifestChanged) {
-      const seedEbs = await this.computeSeedEmbeddings(seeds);
-      this.assignCommunities(changedSections, seeds, seedEbs);
-    }
+      if (manifestChanged) {
+        await this.db.clearCommunityAssignments();
+        for (const seed of seeds) {
+          await this.db.insertCommunity({
+            communityId: seed.communityId,
+            seedSource: seed.seedSource,
+            label: seed.label,
+          });
+        }
+      }
 
-    this.db.insertMeta(`vault:${files.length}files`, manifestHash);
+      const changedSections: SectionInfo[] = [];
+      for (const fileInfo of changed) {
+        if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
+        await this.db.retireSections(fileInfo.path);
+        await this.db.deleteEdgesForFile(fileInfo.path);
+        const sections = await this.indexFile(fileInfo, filePaths, contentTypeDefaults);
+        changedSections.push(...sections);
+      }
+
+      // Recompute edges for affected files
+      if (changedSections.length > 0) {
+        const changedFileIds = new Set(changedSections.map(s => s.fileId));
+        const allSections = await this.db.getAllSections();
+        await this.graph.computeEdgesForFiles(changedSections, changedFileIds, allSections, filePaths);
+      }
+
+      // Re-assign communities if manifest changed
+      if (manifestChanged) {
+        const seedEbs = await computeSeedEmbeddings(this.embedder, seeds);
+        await assignCommunities(this.db, changedSections, seeds, seedEbs);
+      }
+
+      await this.db.insertMeta(`vault:${files.length}files`, manifestHash);
+    } finally {
+      await this.db.close();
+    }
   }
 
   // ------------------------------------------------------------------
@@ -168,42 +161,46 @@ export class Indexer {
   // ------------------------------------------------------------------
 
   async replayJournal(journalEntries: JournalEntryRecord[]): Promise<void> {
-    this.db.initialize();
-    const manifestPath = this.manifestParser.findManifest();
-    const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
-    const affectedFiles = new Set<string>();
+    try {
+      await this.db.initialize();
+      const manifestPath = this.manifestParser.findManifest();
+      const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
+      const affectedFiles = new Set<string>();
 
-    for (const entry of journalEntries) {
-      const verdict = entry.verdict || "";
-      const filePath = entry.file_path || "";
-      if (!filePath) continue;
-      affectedFiles.add(filePath);
+      for (const entry of journalEntries) {
+        const verdict = entry.verdict || "";
+        const filePath = entry.file_path || "";
+        if (!filePath) continue;
+        affectedFiles.add(filePath);
 
-      if (verdict === "new") {
-        const fileInfo = this.readFileInfo(filePath);
-        if (fileInfo) await this.indexFile(fileInfo, new Set([fileInfo.path]), contentTypeDefaults);
-      } else if (["append", "revise", "cleaned"].includes(verdict)) {
-        this.db.retireSections(filePath);
-        this.db.deleteEdgesForFile(filePath);
-        const fileInfo = this.readFileInfo(filePath);
-        if (fileInfo) await this.indexFile(fileInfo, new Set(), contentTypeDefaults);
-      } else if (verdict === "move") {
-        const oldPath = entry.old_path || "";
-        if (oldPath) {
-          this.db.retireSections(oldPath);
-          this.db.deleteEdgesForFile(oldPath);
-          this.db.removeFile(oldPath);
+        if (verdict === "new") {
+          const fileInfo = this.readFileInfo(filePath);
+          if (fileInfo) await this.indexFile(fileInfo, new Set([fileInfo.path]), contentTypeDefaults);
+        } else if (["append", "revise", "cleaned"].includes(verdict)) {
+          await this.db.retireSections(filePath);
+          await this.db.deleteEdgesForFile(filePath);
+          const fileInfo = this.readFileInfo(filePath);
+          if (fileInfo) await this.indexFile(fileInfo, new Set(), contentTypeDefaults);
+        } else if (verdict === "move") {
+          const oldPath = entry.old_path || "";
+          if (oldPath) {
+            await this.db.retireSections(oldPath);
+            await this.db.deleteEdgesForFile(oldPath);
+            await this.db.removeFile(oldPath);
+          }
+          const fileInfo = this.readFileInfo(filePath);
+          if (fileInfo) await this.indexFile(fileInfo, new Set(), contentTypeDefaults);
         }
-        const fileInfo = this.readFileInfo(filePath);
-        if (fileInfo) await this.indexFile(fileInfo, new Set(), contentTypeDefaults);
       }
-    }
 
-    if (affectedFiles.size > 0) {
-      const allSections = this.db.getAllSections();
-      const filePaths = new Set(allSections.map(s => s.fileId));
-      const affectedSections = allSections.filter(s => affectedFiles.has(s.fileId));
-      await this.computeEdgesForFiles(affectedSections, affectedFiles, allSections, filePaths);
+      if (affectedFiles.size > 0) {
+        const allSections = await this.db.getAllSections();
+        const filePaths = new Set(allSections.map(s => s.fileId));
+        const affectedSections = allSections.filter(s => affectedFiles.has(s.fileId));
+        await this.graph.computeEdgesForFiles(affectedSections, affectedFiles, allSections, filePaths);
+      }
+    } finally {
+      await this.db.close();
     }
   }
 
@@ -213,7 +210,11 @@ export class Indexer {
 
   async query(text: string, topK: number = 5): Promise<SearchResult[]> {
     const queryEmbedding = await this.embedder.embed(text);
-    return this.db.searchSimilar(queryEmbedding, topK);
+    try {
+      return await this.db.searchSimilar(queryEmbedding, topK);
+    } finally {
+      await this.db.close();
+    }
   }
 
   // ------------------------------------------------------------------
@@ -251,7 +252,7 @@ export class Indexer {
     fileInfo.reviewed_date = fileInfo.reviewed_date || null;
     fileInfo.rollup_summary = "";
 
-    this.db.upsertFile(fileInfo);
+    await this.db.upsertFile(fileInfo);
 
     // Chunk into header sections
     const sections = this.chunker.chunk(fileInfo);
@@ -270,7 +271,7 @@ export class Indexer {
       };
 
       // Extract entities
-      const entities = this.entityExtractor.extract(section.text);
+      const entities = this.graph.extract(section.text);
 
       // Embed section text — attach to BOTH the db row and the returned
       // section object (matches Python: section["embedding"] = embedding)
@@ -283,19 +284,19 @@ export class Indexer {
         dbSection.embedding = [];
       }
 
-      this.db.upsertSection(dbSection);
+      await this.db.upsertSection(dbSection);
 
       if (entities.length > 0) {
-        this.db.insertEntities(entities);
-        this.db.insertSectionEntities(section.nodeKey, entities);
+        await this.db.insertEntities(entities);
+        await this.db.insertSectionEntities(section.nodeKey, entities);
       }
     }
 
     // Compute file rollup
     try {
-      const rollup = this.db.computeFileRollup(filePath);
+      const rollup = await this.db.computeFileRollup(filePath);
       if (rollup !== null) {
-        this.db.updateFileRollup(filePath, rollup);
+        await this.db.updateFileRollup(filePath, rollup);
       }
     } catch {
       // ignore
@@ -305,147 +306,6 @@ export class Indexer {
       ...s,
       fileId: filePath,
     }));
-  }
-
-  private async computeAllEdges(
-    allSections: IndexableSection[],
-    filePaths: Set<string>,
-  ): Promise<void> {
-    const allEdges: Edge[] = [];
-    const wikilinkEdgeKeys = new Set<string>();
-
-    const fileExists = (key: string): boolean => {
-      const base = key.includes("::") ? key.split("::")[0] : key;
-      return filePaths.has(base);
-    };
-
-    // Group sections by file
-    const fileSections = new Map<string, IndexableSection[]>();
-    for (const s of allSections) {
-      const fid = s.fileId || "";
-      if (!fileSections.has(fid)) fileSections.set(fid, []);
-      fileSections.get(fid)!.push(s);
-    }
-
-    // Phase 1: Wikilink edges
-    for (const [fileId, sections] of fileSections) {
-      const wikilinkEdges = this.entityExtractor.computeWikilinkEdges(
-        sections, fileId, fileExists
-      );
-      allEdges.push(...wikilinkEdges);
-      for (const e of wikilinkEdges) {
-        wikilinkEdgeKeys.add(`${e.srcKey}|${e.dstKey}`);
-      }
-    }
-
-    // Phase 2: Backlink edges
-    const backlinks = this.entityExtractor.computeBacklinks(allEdges);
-    allEdges.push(...backlinks);
-    for (const e of backlinks) {
-      wikilinkEdgeKeys.add(`${e.srcKey}|${e.dstKey}`);
-    }
-
-    // Phase 3: Inferred edges
-    if (allSections.length > 0) {
-      const sectionsWithEmb = allSections.map(s => ({
-        nodeKey: s.nodeKey || "",
-        embedding: s.embedding,
-      }));
-      const inferred = this.entityExtractor.computeInferredEdges(
-        sectionsWithEmb, wikilinkEdgeKeys, 0.7, 3
-      );
-      allEdges.push(...inferred);
-    }
-
-    if (allEdges.length > 0) {
-      this.db.insertEdges(allEdges);
-    }
-  }
-
-  private async computeEdgesForFiles(
-    changedSections: IndexableSection[],
-    changedFileIds: Set<string>,
-    allSections: IndexableSection[],
-    filePaths: Set<string>,
-  ): Promise<void> {
-    const allEdges: Edge[] = [];
-    const wikilinkEdgeKeys = new Set<string>();
-
-    const fileExists = (key: string): boolean => {
-      const base = key.includes("::") ? key.split("::")[0] : key;
-      return filePaths.has(base);
-    };
-
-    const fileSections = new Map<string, IndexableSection[]>();
-    for (const s of allSections) {
-      const fid = s.fileId || "";
-      if (changedFileIds.has(fid)) {
-        if (!fileSections.has(fid)) fileSections.set(fid, []);
-        fileSections.get(fid)!.push(s);
-      }
-    }
-
-    for (const [fileId, sections] of fileSections) {
-      const edges = this.entityExtractor.computeWikilinkEdges(sections, fileId, fileExists);
-      allEdges.push(...edges);
-      for (const e of edges) {
-        wikilinkEdgeKeys.add(`${e.srcKey}|${e.dstKey}`);
-      }
-    }
-
-    const backlinks = this.entityExtractor.computeBacklinks(allEdges);
-    allEdges.push(...backlinks);
-    for (const e of backlinks) {
-      wikilinkEdgeKeys.add(`${e.srcKey}|${e.dstKey}`);
-    }
-
-    if (allEdges.length > 0) {
-      this.db.insertEdges(allEdges);
-    }
-  }
-
-  private assignCommunities(
-    sections: IndexableSection[],
-    seeds: CommunitySeed[],
-    seedEmbeddings: Map<string, number[]>,
-  ): void {
-    if (seeds.length === 0 || seedEmbeddings.size === 0) return;
-
-    for (const section of sections) {
-      const sectionEmb = section.embedding || [];
-      if (sectionEmb.length === 0) continue;
-
-      let bestCommunity = "";
-      let bestScore = -1.0;
-      for (const seed of seeds) {
-        const seedEmb = seedEmbeddings.get(seed.communityId) || [];
-        if (seedEmb.length === 0) continue;
-        const score = DatabaseManager.cosineSimilarity(sectionEmb, seedEmb);
-        if (score > bestScore) {
-          bestScore = score;
-          bestCommunity = seed.communityId;
-        }
-      }
-
-      if (bestCommunity) {
-        this.db.assignSectionToCommunity(
-          section.nodeKey || "", bestCommunity
-        );
-      }
-    }
-  }
-
-  private async computeSeedEmbeddings(seeds: CommunitySeed[]): Promise<Map<string, number[]>> {
-    const result = new Map<string, number[]>();
-    for (const seed of seeds) {
-      const seedText = seed.seedText || seed.label;
-      try {
-        result.set(seed.communityId, await this.embedder.embed(seedText));
-      } catch {
-        result.set(seed.communityId, []);
-      }
-    }
-    return result;
   }
 
   readFileInfo(filePath: string): (FileInfo & Partial<FileWriteInput>) | null {

@@ -27,6 +27,7 @@ export interface YamlPluginSettings {
   manifestFilename?: string;
   inboxFolder?: string;
   ignorePatterns?: string;
+  indexWarnMb?: number;
 }
 
 interface YamlSection {
@@ -88,6 +89,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
   const embedding = tree["embedding"] as YamlSection | undefined;
   const agent = tree["agent"] as YamlSection | undefined;
   const manifest = tree["manifest"] as YamlSection | undefined;
+  const index = tree["index"] as YamlSection | undefined;
 
   const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
   const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
@@ -103,6 +105,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     agentModel: str(agent?.["model"]),
     enableThinking: bool(agent?.["enable_thinking"]),
     manifestFilename: str(manifest?.["filename"]),
+    indexWarnMb: num(index?.["warn_mb"]),
   };
 }
 

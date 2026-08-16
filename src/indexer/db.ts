@@ -1,771 +1,397 @@
-// SQLite database manager for v2 GraphRAG schema.
-// Ported from src/indexer/db.py
-// Uses better-sqlite3 — native C binding, same speed as Python's sqlite3.
-// The module is REQUIRED LAZILY (first connect) so a native-module load
-// issue can never block plugin startup — the DB is only used on demand.
+// DatabaseManager — the main-thread async facade and THE ONLY DB entry point.
+//
+// better-sqlite3 was a native module that could not ship through the plugin
+// store (release ships main.js/manifest.json/styles.css only). The engine is
+// now sql.js running inside a DISPOSABLE Web Worker: each GraphRAG execution
+// spawns a worker, runs, exports, and terminates — worker death frees the
+// WASM heap, which never shrinks in-process (sql.js grows ~10× the index size
+// while building). The database stays a vault file; bytes cross the worker
+// boundary as Transferables, never paths.
+//
+// Lifecycle (per execution):
+//   1. open: read settings.dbPath via the host IO → transfer to the worker.
+//      A legacy file (WAL sidecar, unparseable, or user_version < 2) is
+//      retired to .note-maintainer/legacy/ and a fresh index is started —
+//      the index is derived data, so a one-time rebuild is deterministic.
+//   2. ops: every method below awaits a typed worker op.
+//   3. close: the worker exports once when dirty; the main thread writes the
+//      bytes back via the host IO (temp + rename). Read-only executions
+//      never write.
+//
+// No raw connection may escape this facade — generateManifest's raw queries
+// are sealed behind getFolderedFiles / getWikilinksForFolder /
+// getFolderHeadings.
 
-import type Database from "better-sqlite3";
 import * as path from "path";
 import { settings } from "../config";
-import { VaultIO } from "../io/vault_io";
+import { errorMessage } from "../errors";
+import { getDefaultDbHost, DbHost, DbChannel } from "./db_host";
+import type { DbMethodMap, DbMethodName } from "./db_worker/protocol";
+import type {
+  CommunityRow,
+  CommunityWriteInput,
+  Edge,
+  EdgeRow,
+  EntityWriteInput,
+  FileRow,
+  FileWriteInput,
+  FolderFileRow,
+  FolderHeadingRow,
+  MetaRow,
+  SearchResult,
+  SectionEntityInput,
+  SectionRow,
+  SectionSummary,
+  SectionWriteInput,
+  UnlinkedSection,
+  WikilinkCountRow,
+} from "./db_worker/types";
 
-// Obsidian's plugin loader does not resolve bare specifiers from the plugin's
-// node_modules (error: "Cannot find module 'better-sqlite3'" with require stack
-// electron/js2c/renderer_init). Resolve by absolute path derived from the vault:
-// exact path when manifest.dir is populated, plus a scan of every plugin folder
-// under the config dir (covers any install folder name — local dev, BRAT,
-// community store). Bare require stays first so tests/dev under plain Node keep
-// working.
+export type {
+  CommunityRow,
+  CommunityWriteInput,
+  Edge,
+  EdgeRow,
+  EntityWriteInput,
+  FileRow,
+  FileWriteInput,
+  FolderFileRow,
+  FolderHeadingRow,
+  MetaRow,
+  SearchResult,
+  SectionEntityInput,
+  SectionRow,
+  SectionSummary,
+  SectionWriteInput,
+  UnlinkedSection,
+  WikilinkCountRow,
+} from "./db_worker/types";
 
-function resolveBetterSqlite3(): typeof Database {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- bare require keeps plain-Node dev/tests working
-    return require("better-sqlite3") as typeof Database;
-  } catch {
-    const candidates = collectCandidatePaths();
-    for (const candidate of candidates) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports -- absolute-path fallback for Obsidian's loader (see TROUBLESHOOTING-NOTES.md)
-        return require(candidate) as typeof Database;
-      } catch (e) {
-        console.error(`[db] better-sqlite3 candidate failed: ${candidate} -> ${(e as Error).message}`);
-      }
-    }
-    console.error(
-      `[db] better-sqlite3 resolution failed (vaultPath="${settings.vaultPath}", configDir="${settings.configDir}", pluginDir="${settings.pluginDir}")`
-    );
-    // Actionable message: the native module is not shipped with the release
-    // (main.js/manifest.json/styles.css only), so an install made without
-    // node_modules always lands here.
-    throw new Error(
-      `better-sqlite3 is missing from the plugin install. Tried: ${candidates.length > 0 ? candidates.join(", ") : "(no candidates — settings not wired)"}. ` +
-      `Copy node_modules into the plugin folder (./build-plugin.sh <vault-path>, or README step 5) and reload Obsidian.`
-    );
-  }
-}
+const DEFAULT_INDEX_WARN_MB = 256;
 
-export function collectCandidatePaths(): string[] {
-  const candidates = new Set<string>();
-  const vault = settings.vaultPath;
-  const configDir = settings.configDir;
-  // configDir comes from Vault#configDir at onload (never hardcoded — the
-  // config folder is user-configurable). When settings were never wired
-  // (plain-Node scripts), the vault scan is skipped and resolveBetterSqlite3()
-  // reports "settings not wired" instead of guessing at a path.
-  if (vault && configDir) {
-    if (settings.pluginDir) {
-      candidates.add(path.join(vault, configDir, settings.pluginDir, "node_modules", "better-sqlite3"));
-    }
-    // Scan every plugin folder under the config dir — works for any install
-    // folder name, so plugin id vs folder-name mismatches cannot break loading.
-    const pluginsRoot = path.join(vault, configDir, "plugins");
-    const io = new VaultIO(vault);
-    const { dirs } = io.list(path.join(configDir, "plugins").replace(/\\/g, "/"));
-    for (const entry of dirs) {
-      candidates.add(path.join(pluginsRoot, entry, "node_modules", "better-sqlite3"));
-    }
-  }
-  if (typeof __dirname === "string" && __dirname) {
-    candidates.add(path.join(__dirname, "node_modules", "better-sqlite3"));
-  }
-  return [...candidates];
-}
-
-// ---------------------------------------------------------------------------
-// Schema
-// ---------------------------------------------------------------------------
-
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS FILES (
-    file_id         TEXT PRIMARY KEY,
-    path            TEXT,
-    title           TEXT,
-    folder          TEXT,
-    created_date    TEXT,
-    modified_date   TEXT,
-    reviewed_date   TEXT,
-    owner           TEXT,
-    content_type    TEXT,
-    granularity     TEXT,
-    version         INTEGER DEFAULT 1,
-    content_hash    TEXT,
-    rollup_summary  TEXT
-);
-
-CREATE TABLE IF NOT EXISTS SECTIONS (
-    node_key        TEXT PRIMARY KEY,
-    file_id         TEXT NOT NULL,
-    heading_path    TEXT,
-    heading_text    TEXT,
-    line_start      INTEGER,
-    line_end        INTEGER,
-    text            TEXT,
-    embedding       BLOB,
-    content_hash    TEXT,
-    FOREIGN KEY (file_id) REFERENCES FILES(file_id)
-);
-
-CREATE TABLE IF NOT EXISTS ENTITIES (
-    entity_id   TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    type        TEXT DEFAULT 'unknown'
-);
-
-CREATE TABLE IF NOT EXISTS SECTION_ENTITIES (
-    section_key TEXT NOT NULL,
-    entity_id   TEXT NOT NULL,
-    PRIMARY KEY (section_key, entity_id),
-    FOREIGN KEY (section_key) REFERENCES SECTIONS(node_key),
-    FOREIGN KEY (entity_id) REFERENCES ENTITIES(entity_id)
-);
-
-CREATE TABLE IF NOT EXISTS EDGES (
-    src_key     TEXT NOT NULL,
-    dst_key     TEXT NOT NULL,
-    kind        TEXT NOT NULL,
-    weight      REAL DEFAULT 1.0,
-    PRIMARY KEY (src_key, dst_key, kind)
-);
-
-CREATE TABLE IF NOT EXISTS COMMUNITIES (
-    community_id    TEXT PRIMARY KEY,
-    seed_source     TEXT,
-    label           TEXT
-);
-
-CREATE TABLE IF NOT EXISTS INDEX_META (
-    snapshot_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    built_at        TEXT,
-    vault_version   TEXT,
-    manifest_hash   TEXT
-);
-
-CREATE TABLE IF NOT EXISTS COMMUNITY_SECTIONS (
-    section_key TEXT NOT NULL,
-    community_id TEXT NOT NULL,
-    PRIMARY KEY (section_key, community_id),
-    FOREIGN KEY (section_key) REFERENCES SECTIONS(node_key),
-    FOREIGN KEY (community_id) REFERENCES COMMUNITIES(community_id)
-);
-`;
-
-const MIGRATED_COLUMNS: Record<string, string[]> = {
-  "FILES": ["folder", "reviewed_date", "owner", "content_type", "granularity", "rollup_summary"],
-  "INDEX_META": ["manifest_hash"],
-};
+// Hard reentrancy guarantee for the upgrade flow. retireLegacyIndex must
+// never fire the host upgrade hook while another upgrade is still in flight:
+// the hook historically triggered a full agent rebuild, which re-entered
+// ensureChannel and — when the retire failed to move files — looped until
+// the renderer ran out of wasm memory (~108 nested sql.js workers). With the
+// rebuild decoupled from the hook this is defense-in-depth, but it makes the
+// loop structurally impossible even if a detection bug ever returns.
+let legacyUpgradeInFlight = false;
 
 // ---------------------------------------------------------------------------
 // DatabaseManager
 // ---------------------------------------------------------------------------
 
 export class DatabaseManager {
-  dbPath: string;
-  private db: Database.Database | null = null;
+  readonly dbPath: string;
+  private readonly host: DbHost;
+  private channel: DbChannel | null = null;
+  private upgraded = false;
 
-  constructor(dbPath: string) {
+  /** True when this execution retired a legacy index (see ensureChannel). */
+  get didUpgrade(): boolean {
+    return this.upgraded;
+  }
+
+  constructor(dbPath: string, host?: DbHost) {
     this.dbPath = dbPath;
+    this.host = host ?? getDefaultDbHost();
   }
 
-  connect(): Database.Database {
-    if (this.db) return this.db;
-    this.ensureDbDir();
-    // Lazy require: keeps better-sqlite3 out of the plugin's load-time
-    // require chain (see file header comment).
-    const DatabaseCtor = resolveBetterSqlite3();
-    this.db = new DatabaseCtor(this.dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
-    return this.db;
-  }
+  /**
+   * Open (or lazily reopen) the per-execution worker and load the vault DB
+   * bytes into it. Retires a legacy index to legacy/ when detected (WAL
+   * sidecar present, file unparseable, or user_version < DB_ENGINE_VERSION).
+   */
+  private async ensureChannel(): Promise<DbChannel> {
+    if (this.channel) return this.channel;
 
-  /** Confined mkdirp for the DB directory (inside the vault via VaultIO). */
-  private ensureDbDir(): void {
-    const dir = path.dirname(this.dbPath);
-    const vault = settings.vaultPath;
-    if (vault) {
-      const io = new VaultIO(vault);
-      const rel = path.relative(io.rootAbs, path.resolve(this.dbPath));
-      if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
-        io.mkdirp(path.dirname(rel).replace(/\\/g, "/"));
-        return;
-      }
-    }
-    // settings unwired (plain-Node scripts/tests) — confine to the db dir
-    // itself so nothing outside it can be touched.
-    new VaultIO(dir).mkdirp(".");
-  }
+    const io = this.host.io;
+    const dbPath = this.dbPath;
+    const dir = path.dirname(dbPath);
+    const base = path.basename(dbPath);
 
-  initialize(): void {
-    const conn = this.connect();
-
-    // Check existing tables
-    const existing = new Set(
-      conn.prepare<[], NameOnlyRow>("SELECT name FROM sqlite_master WHERE type='table'")
-        .all()
-        .map((r) => r.name)
-    );
-
-    const v1Tables = new Set<string>();
-    if (existing.has("CHUNKS")) v1Tables.add("CHUNKS");
-    if (existing.has("CHUNK_ENTITIES")) v1Tables.add("CHUNK_ENTITIES");
-
-    // Check if FILES needs migration (missing file_id column)
-    if (existing.has("FILES")) {
-      const cols = conn.prepare<[], NameOnlyRow>("PRAGMA table_info(FILES)").all()
-        .map((r) => r.name);
-      if (!cols.includes("file_id")) {
-        v1Tables.add("FILES");
-        v1Tables.add("EDGES");
-        v1Tables.add("INDEX_META");
-      }
+    // WAL sidecar detection must happen before reading bytes: a legacy
+    // better-sqlite3 WAL file may hold uncheckpointed frames that sql.js
+    // silently ignores — retire + rebuild is the deterministic path.
+    // Listed entries are matched by bare name (basename) because hosts may
+    // return vault-relative full paths (Obsidian's DataAdapter.list does) —
+    // matching on raw strings silently missed the sidecar and looped.
+    if ((await io.listFiles(dir)).some((f) => path.posix.basename(f).startsWith(`${base}-`))) {
+      await this.retireLegacyIndex();
     }
 
-    // Drop v1 tables in dependency order
-    const dropOrder = ["CHUNK_ENTITIES", "CHUNKS", "EDGES", "INDEX_META", "FILES"];
-    for (const table of dropOrder) {
-      if (v1Tables.has(table)) {
-        conn.prepare(`DROP TABLE IF EXISTS ${table}`).run();
-      }
+    let dbBytes: Uint8Array | null = null;
+    if (await io.exists(dbPath)) {
+      dbBytes = await io.readBinary(dbPath);
     }
 
-    // Create v2 schema
-    conn.exec(SCHEMA_SQL);
-    this.ensureMigratedColumns(conn);
+    const wasmBinary = await this.host.loadWasmBinary();
+    const channel = await this.host.createChannel(wasmBinary);
+    const open = await channel.open(dbBytes);
+    if (open.needsRebuild) {
+      // Legacy or corrupt file — move it aside and start a fresh index.
+      await this.retireLegacyIndex();
+      await channel.open(null);
+    }
+
+    this.channel = channel;
+    // Schema safety: ensure the v2 tables + user_version marker exist.
+    await channel.call("initialize");
+    return channel;
   }
 
-  private ensureMigratedColumns(conn: Database.Database): void {
-    for (const [table, columns] of Object.entries(MIGRATED_COLUMNS)) {
-      const existing = new Set(
-        conn.prepare<[], NameOnlyRow>(`PRAGMA table_info(${table})`).all()
-          .map((r) => r.name)
+  /**
+   * Retire a legacy index (move index.db* into .note-maintainer/legacy/ and
+   * notify the host ONCE). Returns whether anything was actually moved.
+   *
+   * The host hook must NOT rebuild — a rebuild from inside a DB open path is
+   * what caused the recursive loop (nested workers → wasm OOM). The hook only
+   * surfaces the one-time event; the caller's own open already continues with
+   * a fresh index (derived data — a deterministic one-time rebuild).
+   */
+  private async retireLegacyIndex(): Promise<boolean> {
+    if (legacyUpgradeInFlight) {
+      console.warn(
+        "[db] index upgrade already in flight — skipping nested legacy retire " +
+        "(reentrancy guard).",
       );
-      for (const col of columns) {
-        if (!existing.has(col)) {
-          conn.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`).run();
+      return false;
+    }
+
+    legacyUpgradeInFlight = true;
+    try {
+      const moved = await this.moveLegacyFiles();
+      if (moved === 0) {
+        // Detection said legacy, but nothing matched — a path-shape or IO bug.
+        // Log loudly instead of recursing; the caller still starts a fresh
+        // index, which overwrites the legacy file at close (self-healing).
+        console.warn(
+          `[db] retireLegacyIndex: legacy condition detected for ${this.dbPath} but no ` +
+          "files matched — nothing moved. Falling back to a fresh index; " +
+          "investigate listFiles/rename if this repeats.",
+        );
+        return false;
+      }
+
+      if (this.host.onIndexUpgraded) {
+        await this.host.onIndexUpgraded();
+      }
+      this.upgraded = true;
+      return true;
+    } finally {
+      legacyUpgradeInFlight = false;
+    }
+  }
+
+  /** Move every index.db* file in the db dir into legacy/. Best-effort. */
+  private async moveLegacyFiles(): Promise<number> {
+    const io = this.host.io;
+    const dir = path.dirname(this.dbPath);
+    const base = path.basename(this.dbPath);
+    const legacyDir = path.join(dir, "legacy");
+    let moved = 0;
+    try {
+      await io.mkdirp(legacyDir);
+      for (const entry of await io.listFiles(dir)) {
+        // Basename-normalize: hosts may list bare names (Node) or full
+        // vault-relative paths (Obsidian adapter). Never match raw strings.
+        const name = path.posix.basename(entry);
+        if (name === base || name.startsWith(`${base}-`)) {
+          await io.rename(path.join(dir, name), path.join(legacyDir, name));
+          moved++;
         }
       }
+    } catch (e) {
+      // Best-effort: a failed move must not take down the build. The fresh-
+      // index fallback overwrites the legacy file at close, and the loud log
+      // surfaces the real problem (a swallowed mkdirp used to hide it).
+      console.warn(
+        `[db] retireLegacyIndex: file move failed (${errorMessage(e)}) — keeping the ` +
+        "legacy index in place and falling back to a fresh index.",
+      );
+    }
+    return moved;
+  }
+
+  /**
+   * Finalize the execution: export (when dirty) and write the vault file
+   * back atomically, then terminate the worker. Idempotent and safe on
+   * error paths (no export when an op threw earlier).
+   */
+  async close(): Promise<void> {
+    const channel = this.channel;
+    if (!channel) return;
+    this.channel = null;
+    let bytes: Uint8Array | null = null;
+    try {
+      bytes = await channel.close();
+    } finally {
+      channel.dispose();
+    }
+    if (bytes) {
+      await this.host.io.mkdirp(path.dirname(this.dbPath));
+      await this.host.io.writeBinaryAtomic(this.dbPath, bytes);
+      this.warnIfOversize(bytes.byteLength);
     }
   }
 
-  clearAll(): void {
-    const conn = this.connect();
-    const tables = [
-      "COMMUNITY_SECTIONS", "SECTION_ENTITIES", "SECTIONS", "EDGES",
-      "ENTITIES", "COMMUNITIES", "FILES", "INDEX_META",
-    ];
-    for (const table of tables) {
-      conn.prepare(`DELETE FROM ${table}`).run();
+  /** Hard teardown without writing back (error paths). */
+  dispose(): void {
+    if (this.channel) {
+      this.channel.dispose();
+      this.channel = null;
     }
   }
 
-  // ------------------------------------------------------------------
-  // File operations
-  // ------------------------------------------------------------------
-
-  upsertFile(fileInfo: FileWriteInput): void {
-    const conn = this.connect();
-    conn.prepare(`
-      INSERT OR REPLACE INTO FILES
-      (file_id, path, title, folder, created_date, modified_date,
-       reviewed_date, owner, content_type, granularity,
-       version, content_hash, rollup_summary)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      fileInfo.file_id || fileInfo.path || "",
-      fileInfo.path || "",
-      fileInfo.title || "",
-      fileInfo.folder || "",
-      fileInfo.created_date || null,
-      fileInfo.modified_date || null,
-      fileInfo.reviewed_date || null,
-      fileInfo.owner || "",
-      fileInfo.content_type || "",
-      fileInfo.granularity || "",
-      fileInfo.version || 1,
-      fileInfo.content_hash || null,
-      fileInfo.rollup_summary || "",
-    );
-  }
-
-  updateFileRollup(fileId: string, rollup: string): void {
-    const conn = this.connect();
-    conn.prepare("UPDATE FILES SET rollup_summary = ? WHERE file_id = ?")
-      .run(rollup, fileId);
-  }
-
-  hasFileChanged(fileInfo: FileWriteInput): boolean {
-    const conn = this.connect();
-    const fileId = fileInfo.file_id || fileInfo.path || "";
-    const row = conn.prepare<[string], { content_hash: string | null }>(
-      "SELECT content_hash FROM FILES WHERE file_id = ?"
-    ).get(fileId);
-    return !row || row.content_hash !== fileInfo.content_hash;
-  }
-
-  getFileInfo(filePath: string): FileRow | null {
-    const conn = this.connect();
-    return conn.prepare<[string], FileRow>("SELECT * FROM FILES WHERE file_id = ?").get(filePath) || null;
-  }
-
-  removeFile(filePath: string): void {
-    const conn = this.connect();
-    conn.prepare(
-      "DELETE FROM SECTION_ENTITIES WHERE section_key IN (SELECT node_key FROM SECTIONS WHERE file_id = ?)"
-    ).run(filePath);
-    conn.prepare(
-      "DELETE FROM COMMUNITY_SECTIONS WHERE section_key IN (SELECT node_key FROM SECTIONS WHERE file_id = ?)"
-    ).run(filePath);
-    conn.prepare("DELETE FROM SECTIONS WHERE file_id = ?").run(filePath);
-    conn.prepare("DELETE FROM EDGES WHERE src_key = ? OR dst_key = ?").run(filePath, filePath);
-    conn.prepare("DELETE FROM FILES WHERE file_id = ?").run(filePath);
-  }
-
-  // ------------------------------------------------------------------
-  // Section operations
-  // ------------------------------------------------------------------
-
-  static floatsToBlob(emb: number[]): Buffer {
-    const buf = Buffer.allocUnsafe(emb.length * 8);
-    for (let i = 0; i < emb.length; i++) {
-      buf.writeDoubleLE(emb[i], i * 8);
-    }
-    return buf;
-  }
-
-  upsertSection(section: SectionWriteInput): string {
-    const conn = this.connect();
-    const emb = section.embedding;
-    const embBlob = emb ? DatabaseManager.floatsToBlob(emb) : Buffer.alloc(0);
-    conn.prepare(`
-      INSERT OR REPLACE INTO SECTIONS
-      (node_key, file_id, heading_path, heading_text,
-       line_start, line_end, text, embedding, content_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      section.nodeKey,
-      section.fileId,
-      section.headingPath || section.heading_path || "",
-      section.headingText || section.heading_text || "",
-      section.lineStart || section.line_start || 0,
-      section.lineEnd || section.line_end || 0,
-      section.text || "",
-      embBlob,
-      section.contentHash || section.content_hash || "",
-    );
-    return section.nodeKey || "";
-  }
-
-  retireSections(fileId: string): number {
-    const conn = this.connect();
-    conn.prepare(
-      "DELETE FROM SECTION_ENTITIES WHERE section_key IN (SELECT node_key FROM SECTIONS WHERE file_id = ?)"
-    ).run(fileId);
-    conn.prepare(
-      "DELETE FROM COMMUNITY_SECTIONS WHERE section_key IN (SELECT node_key FROM SECTIONS WHERE file_id = ?)"
-    ).run(fileId);
-    const result = conn.prepare("DELETE FROM SECTIONS WHERE file_id = ?").run(fileId);
-    return result.changes;
-  }
-
-  getSectionsForFile(fileId: string): SectionRow[] {
-    const conn = this.connect();
-    return conn.prepare<[string], SectionRow>("SELECT * FROM SECTIONS WHERE file_id = ?").all(fileId);
-  }
-
-  getAllSections(): SectionSummary[] {
-    const conn = this.connect();
-    const rows = conn.prepare<[], SectionEmbeddingRow>(
-      "SELECT node_key, file_id, heading_path, text, embedding FROM SECTIONS WHERE embedding IS NOT NULL"
-    ).all();
-    return rows.map((row) => ({
-      nodeKey: row.node_key,
-      fileId: row.file_id,
-      headingPath: row.heading_path,
-      text: row.text,
-      embedding: DatabaseManager.blobToFloats(row.embedding),
-    }));
-  }
-
-  searchSimilar(queryEmbedding: number[], topK: number = 5): SearchResult[] {
-    const conn = this.connect();
-    const rows = conn.prepare<[], SearchRow>(`
-      SELECT s.node_key, s.file_id, s.heading_path, s.heading_text,
-             s.line_start, s.line_end, s.text, s.embedding, s.content_hash,
-             f.path, f.title, f.content_type, f.rollup_summary, f.content_hash
-      FROM SECTIONS s JOIN FILES f ON s.file_id = f.file_id
-      WHERE s.embedding IS NOT NULL
-    `).all();
-
-    const results: [number, SearchResult][] = [];
-    for (const row of rows) {
-      const storedEmb = DatabaseManager.blobToFloats(row.embedding);
-      if (!storedEmb || storedEmb.length === 0) continue;
-
-      const score = DatabaseManager.cosineSimilarity(queryEmbedding, storedEmb);
-      results.push([score, {
-        nodeKey: row.node_key,
-        fileId: row.file_id,
-        filePath: row.file_id,
-        headingPath: row.heading_path || "",
-        headingText: row.heading_text || "",
-        lineStart: row.line_start || 0,
-        lineEnd: row.line_end || 0,
-        text: row.text || "",
-        contentHash: row.content_hash || "",
-        fileContentHash: row.content_hash || "",
-        contentType: row.content_type || "",
-        rollupSummary: row.rollup_summary || "",
-        title: row.title || "",
-        score,
-      }]);
-    }
-
-    results.sort((a, b) => b[0] - a[0]);
-    return results.slice(0, topK).map(r => r[1]);
-  }
-
-  // ------------------------------------------------------------------
-  // Entity operations
-  // ------------------------------------------------------------------
-
-  insertEntities(entities: Array<{ entityId: string; name: string; type?: string }>): void {
-    const conn = this.connect();
-    const stmt = conn.prepare(
-      "INSERT OR IGNORE INTO ENTITIES (entity_id, name, type) VALUES (?, ?, ?)"
-    );
-    for (const ent of entities) {
-      stmt.run(ent.entityId, ent.name, ent.type || "unknown");
+  private warnIfOversize(byteLength: number): void {
+    const warnMb = this.indexSizeWarningMb();
+    if (warnMb > 0 && byteLength > warnMb * 1024 * 1024) {
+      console.warn(
+        `[db] index is ${(byteLength / (1024 * 1024)).toFixed(0)} MB — above the ` +
+        `configured ${warnMb} MB warning threshold (index.warn_mb). The in-memory ` +
+        "build footprint is ~10× the file size; watch RAM on large vaults.",
+      );
     }
   }
 
-  insertSectionEntities(sectionKey: string, entities: Array<{ entityId: string }>): void {
-    const conn = this.connect();
-    const stmt = conn.prepare(
-      "INSERT OR IGNORE INTO SECTION_ENTITIES (section_key, entity_id) VALUES (?, ?)"
-    );
-    for (const ent of entities) {
-      stmt.run(sectionKey, ent.entityId);
-    }
+  private indexSizeWarningMb(): number {
+    const configured = settings.index?.warnMb;
+    return typeof configured === "number" && Number.isFinite(configured) && configured > 0
+      ? configured
+      : DEFAULT_INDEX_WARN_MB;
   }
 
   // ------------------------------------------------------------------
-  // Edge operations
+  // Typed op dispatch
   // ------------------------------------------------------------------
 
-  insertEdges(edges: Edge[]): void {
-    const conn = this.connect();
-    const stmt = conn.prepare(
-      "INSERT OR REPLACE INTO EDGES (src_key, dst_key, kind, weight) VALUES (?, ?, ?, ?)"
-    );
-    for (const edge of edges) {
-      stmt.run(edge.srcKey, edge.dstKey, edge.kind, edge.weight);
-    }
-  }
-
-  getWikilinkEdges(fileId: string): EdgeRow[] {
-    const conn = this.connect();
-    return conn.prepare<[string, string], EdgeRow>(
-      `SELECT src_key, dst_key, kind, weight FROM EDGES
-       WHERE kind IN ('wikilink', 'backlink') AND (src_key = ? OR src_key LIKE ?)`
-    ).all(fileId, `${fileId}::%`);
-  }
-
-  deleteEdgesForFile(fileId: string): void {
-    const conn = this.connect();
-    conn.prepare(
-      "DELETE FROM EDGES WHERE src_key = ? OR src_key LIKE ? OR dst_key = ? OR dst_key LIKE ?"
-    ).run(fileId, `${fileId}::%`, fileId, `${fileId}::%`);
-  }
-
-  getUnlinkedSections(): UnlinkedSection[] {
-    const conn = this.connect();
-    const rows = conn.prepare<[], UnlinkedSectionRow>(`
-      SELECT s.node_key, s.file_id, s.embedding
-      FROM SECTIONS s
-      WHERE s.node_key NOT IN (
-        SELECT src_key FROM EDGES WHERE kind IN ('wikilink', 'backlink')
-        UNION
-        SELECT dst_key FROM EDGES WHERE kind IN ('wikilink', 'backlink')
-      )
-    `).all();
-    return rows.map((r) => ({
-      nodeKey: r.node_key,
-      fileId: r.file_id,
-      embedding: DatabaseManager.blobToFloats(r.embedding),
-    }));
+  private async callDb<K extends DbMethodName>(
+    method: K,
+    ...args: DbMethodMap[K]["args"]
+  ): Promise<DbMethodMap[K]["result"]> {
+    const channel = await this.ensureChannel();
+    return channel.call(method, ...args);
   }
 
   // ------------------------------------------------------------------
-  // Community operations
+  // Facade surface (mirrors the old sync DatabaseManager 1:1)
   // ------------------------------------------------------------------
 
-  insertCommunity(community: CommunityWriteInput): string {
-    const conn = this.connect();
-    conn.prepare(
-      "INSERT OR REPLACE INTO COMMUNITIES (community_id, seed_source, label) VALUES (?, ?, ?)"
-    ).run(community.communityId || community.community_id, community.seedSource || community.seed_source || "unsupervised", community.label || "");
-    return community.communityId || community.community_id || "";
+  async initialize(): Promise<void> {
+    await this.ensureChannel();
   }
 
-  getAllCommunities(): CommunityRow[] {
-    const conn = this.connect();
-    return conn.prepare<[], CommunityRow>("SELECT * FROM COMMUNITIES ORDER BY community_id").all();
+  async clearAll(): Promise<void> {
+    await this.callDb("clearAll");
   }
 
-  assignSectionToCommunity(sectionKey: string, communityId: string): void {
-    const conn = this.connect();
-    conn.prepare(
-      "INSERT OR IGNORE INTO COMMUNITY_SECTIONS (section_key, community_id) VALUES (?, ?)"
-    ).run(sectionKey, communityId);
+  async upsertFile(fileInfo: FileWriteInput): Promise<void> {
+    await this.callDb("upsertFile", fileInfo);
   }
 
-  getCommunityForSection(sectionKey: string): string | null {
-    const conn = this.connect();
-    const row = conn.prepare<[string], { community_id: string }>(
-      "SELECT community_id FROM COMMUNITY_SECTIONS WHERE section_key = ?"
-    ).get(sectionKey);
-    return row ? row.community_id : null;
+  async updateFileRollup(fileId: string, rollup: string): Promise<void> {
+    await this.callDb("updateFileRollup", fileId, rollup);
   }
 
-  clearCommunityAssignments(): void {
-    const conn = this.connect();
-    conn.prepare("DELETE FROM COMMUNITY_SECTIONS").run();
+  async hasFileChanged(fileInfo: FileWriteInput): Promise<boolean> {
+    return this.callDb("hasFileChanged", fileInfo);
   }
 
-  // ------------------------------------------------------------------
-  // Metadata
-  // ------------------------------------------------------------------
-
-  insertMeta(vaultVersion: string, manifestHash: string = ""): number {
-    const conn = this.connect();
-    const now = new Date().toISOString();
-    const result = conn.prepare(
-      "INSERT INTO INDEX_META (built_at, vault_version, manifest_hash) VALUES (?, ?, ?)"
-    ).run(now, vaultVersion, manifestHash);
-    return Number(result.lastInsertRowid);
+  async getFileInfo(filePath: string): Promise<FileRow | null> {
+    return this.callDb("getFileInfo", filePath);
   }
 
-  getLatestMeta(): MetaRow | null {
-    const conn = this.connect();
-    return conn.prepare<[], MetaRow>(
-      "SELECT * FROM INDEX_META ORDER BY snapshot_id DESC LIMIT 1"
-    ).get() || null;
+  async removeFile(filePath: string): Promise<void> {
+    await this.callDb("removeFile", filePath);
   }
 
-  // ------------------------------------------------------------------
-  // Rollup helpers
-  // ------------------------------------------------------------------
-
-  computeFileRollup(fileId: string): string | null {
-    const sections = this.getSectionsForFile(fileId);
-    if (sections.length === 0) return "";
-    const fileInfo = this.getFileInfo(fileId);
-    if (fileInfo && fileInfo.granularity === "verbatim") return null;
-    const headings: string[] = [];
-    for (const s of sections) {
-      const hp = s.heading_path || "";
-      if (hp) {
-        headings.push(hp.split(" › ").pop() || "");
-      }
-    }
-    if (headings.length > 0) {
-      return "Sections: " + headings.slice(0, 10).join(", ");
-    }
-    return "";
+  async upsertSection(section: SectionWriteInput): Promise<string> {
+    return this.callDb("upsertSection", section);
   }
 
-  // ------------------------------------------------------------------
-  // Static helpers
-  // ------------------------------------------------------------------
-
-  static blobToFloats(blob: Buffer | null): number[] | null {
-    if (!blob || blob.length === 0) return null;
-    const count = blob.length / 8;
-    const result: number[] = [];
-    for (let i = 0; i < count; i++) {
-      result.push(blob.readDoubleLE(i * 8));
-    }
-    return result;
+  async retireSections(fileId: string): Promise<number> {
+    return this.callDb("retireSections", fileId);
   }
 
-  static cosineSimilarity(a: number[], b: number[]): number {
-    let dot = 0, normA = 0, normB = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-    if (normA === 0 || normB === 0) return 0.0;
-    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  async getSectionsForFile(fileId: string): Promise<SectionRow[]> {
+    return this.callDb("getSectionsForFile", fileId);
   }
-}
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+  async getAllSections(): Promise<SectionSummary[]> {
+    return this.callDb("getAllSections");
+  }
 
-// Row interfaces for typed queries — better-sqlite3's .all()/.get() return
-// unknown, so every statement declares the shape it actually reads.
-interface NameOnlyRow {
-  name: string;
-}
+  async searchSimilar(queryEmbedding: number[], topK: number = 5): Promise<SearchResult[]> {
+    return this.callDb("searchSimilar", queryEmbedding, topK);
+  }
 
-export interface FileRow {
-  file_id: string;
-  path: string;
-  title: string;
-  folder: string;
-  created_date: string | null;
-  modified_date: string | null;
-  reviewed_date: string | null;
-  owner: string;
-  content_type: string;
-  granularity: string;
-  version: number;
-  content_hash: string | null;
-  rollup_summary: string;
-}
+  async insertEntities(entities: EntityWriteInput[]): Promise<void> {
+    await this.callDb("insertEntities", entities);
+  }
 
-export interface SectionRow {
-  node_key: string;
-  file_id: string;
-  heading_path: string | null;
-  heading_text: string | null;
-  line_start: number | null;
-  line_end: number | null;
-  text: string | null;
-  embedding: Buffer | null;
-  content_hash: string | null;
-}
+  async insertSectionEntities(sectionKey: string, entities: SectionEntityInput[]): Promise<void> {
+    await this.callDb("insertSectionEntities", sectionKey, entities);
+  }
 
-interface SectionEmbeddingRow {
-  node_key: string;
-  file_id: string;
-  heading_path: string | null;
-  text: string | null;
-  embedding: Buffer | null;
-}
+  async insertEdges(edges: Edge[]): Promise<void> {
+    await this.callDb("insertEdges", edges);
+  }
 
-interface UnlinkedSectionRow {
-  node_key: string;
-  file_id: string;
-  embedding: Buffer | null;
-}
+  async getWikilinkEdges(fileId: string): Promise<EdgeRow[]> {
+    return this.callDb("getWikilinkEdges", fileId);
+  }
 
-interface SearchRow {
-  node_key: string;
-  file_id: string;
-  heading_path: string | null;
-  heading_text: string | null;
-  line_start: number | null;
-  line_end: number | null;
-  text: string | null;
-  embedding: Buffer | null;
-  content_hash: string | null;
-  path: string;
-  title: string;
-  content_type: string;
-  rollup_summary: string;
-}
+  async deleteEdgesForFile(fileId: string): Promise<void> {
+    await this.callDb("deleteEdgesForFile", fileId);
+  }
 
-export interface EdgeRow {
-  src_key: string;
-  dst_key: string;
-  kind: string;
-  weight: number;
-}
+  async getUnlinkedSections(): Promise<UnlinkedSection[]> {
+    return this.callDb("getUnlinkedSections");
+  }
 
-interface CommunityRow {
-  community_id: string;
-  seed_source: string | null;
-  label: string | null;
-}
+  async insertCommunity(community: CommunityWriteInput): Promise<string> {
+    return this.callDb("insertCommunity", community);
+  }
 
-interface MetaRow {
-  snapshot_id: number;
-  built_at: string;
-  vault_version: string;
-  manifest_hash: string | null;
-}
+  async getAllCommunities(): Promise<CommunityRow[]> {
+    return this.callDb("getAllCommunities");
+  }
 
-// Write-input shapes — all-optional so Record<string, any> callers still
-// compile while db.ts reads are fully typed.
-export interface FileWriteInput {
-  file_id?: string;
-  path?: string;
-  title?: string;
-  folder?: string;
-  created_date?: string | null;
-  // Scanner reports mtime as a number; the FILES column stores it as TEXT.
-  modified_date?: string | number | null;
-  reviewed_date?: string | null;
-  owner?: string;
-  content_type?: string;
-  granularity?: string;
-  version?: number;
-  content_hash?: string | null;
-  rollup_summary?: string;
-}
+  async assignSectionToCommunity(sectionKey: string, communityId: string): Promise<void> {
+    await this.callDb("assignSectionToCommunity", sectionKey, communityId);
+  }
 
-export interface SectionWriteInput {
-  nodeKey?: string;
-  fileId?: string;
-  headingPath?: string;
-  heading_path?: string;
-  headingText?: string;
-  heading_text?: string;
-  lineStart?: number;
-  line_start?: number;
-  lineEnd?: number;
-  line_end?: number;
-  text?: string;
-  contentHash?: string;
-  content_hash?: string;
-  embedding?: number[];
-}
+  async getCommunityForSection(sectionKey: string): Promise<string | null> {
+    return this.callDb("getCommunityForSection", sectionKey);
+  }
 
-interface CommunityWriteInput {
-  communityId?: string;
-  community_id?: string;
-  seedSource?: string;
-  seed_source?: string;
-  label?: string;
-}
+  async clearCommunityAssignments(): Promise<void> {
+    await this.callDb("clearCommunityAssignments");
+  }
 
-export interface SectionSummary {
-  nodeKey: string;
-  fileId: string;
-  headingPath: string | null;
-  text: string | null;
-  embedding: number[] | null;
-}
+  async insertMeta(vaultVersion: string, manifestHash: string = ""): Promise<number> {
+    return this.callDb("insertMeta", vaultVersion, manifestHash);
+  }
 
-interface UnlinkedSection {
-  nodeKey: string;
-  fileId: string;
-  embedding: number[] | null;
-}
+  async getLatestMeta(): Promise<MetaRow | null> {
+    return this.callDb("getLatestMeta");
+  }
 
-export interface Edge {
-  srcKey: string;
-  dstKey: string;
-  kind: string;
-  weight: number;
-}
+  async computeFileRollup(fileId: string): Promise<string | null> {
+    return this.callDb("computeFileRollup", fileId);
+  }
 
-export interface SearchResult {
-  nodeKey: string;
-  fileId: string;
-  filePath: string;
-  headingPath: string;
-  headingText: string;
-  lineStart: number;
-  lineEnd: number;
-  text: string;
-  contentHash: string;
-  fileContentHash: string;
-  contentType: string;
-  rollupSummary: string;
-  title: string;
-  score: number;
+  // Sealed queries for generateManifest (no raw connection escapes).
+  async getFolderedFiles(): Promise<FolderFileRow[]> {
+    return this.callDb("getFolderedFiles");
+  }
+
+  async getWikilinksForFolder(folder: string): Promise<WikilinkCountRow[]> {
+    return this.callDb("getWikilinksForFolder", folder);
+  }
+
+  async getFolderHeadings(folder: string): Promise<FolderHeadingRow[]> {
+    return this.callDb("getFolderHeadings", folder);
+  }
 }

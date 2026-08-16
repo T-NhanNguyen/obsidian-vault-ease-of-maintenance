@@ -10,6 +10,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@src": "/src",
+      // Build-time virtual module (worker bundle string); see
+      // tests/fixtures/worker_bundle_stub.ts.
+      "@worker-bundle": "/tests/fixtures/worker_bundle_stub.ts",
       // The obsidian npm package ships types only (empty "main"), so Vite
       // cannot resolve it. Alias to a stub for tests; the plugin build keeps
       // "obsidian" as an esbuild external (real module at runtime).

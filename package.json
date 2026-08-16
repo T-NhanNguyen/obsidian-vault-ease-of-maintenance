@@ -11,11 +11,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.2"
+    "sql.js": "^1.14.2"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.0.0",
+    "@types/sql.js": "^1.4.11",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
     "eslint-plugin-obsidianmd": "^0.4.1",

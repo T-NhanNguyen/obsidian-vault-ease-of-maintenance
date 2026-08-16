@@ -4,6 +4,9 @@
 import * as crypto from "crypto";
 import { VaultIO } from "../io/vault_io";
 import { settings } from "../config";
+import { CommunitySeed } from "./communities";
+
+export { CommunitySeed } from "./communities";
 
 export const MANIFEST_FILENAME = "_manifest.md";
 
@@ -320,12 +323,4 @@ export class ManifestParser {
 
     return defaults;
   }
-}
-
-export interface CommunitySeed {
-  communityId: string;
-  seedSource: string;
-  label: string;
-  seedText: string;
-  folderPath: string;
 }

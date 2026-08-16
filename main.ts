@@ -21,6 +21,7 @@ import {
   ProposedChange,
 } from "./src/agent/runtime";
 import { VaultIO } from "./src/io/vault_io";
+import { setDefaultDbHost, createObsidianDbHost } from "./src/indexer/db_host";
 import { resetRegistry } from "./src/agent/tools";
 import { openReviewInModal } from "./src/container-modal";
 import {
@@ -51,6 +52,10 @@ interface PluginSettings {
   ignorePatterns: string;
   manifestFilename: string;
   reviewContainer: ReviewContainer;
+  // Index-size warning threshold (MB) — config.yaml index.warn_mb; when the
+  // exported index exceeds it, DatabaseManager warns (sql.js builds hold ~10×
+  // the file size in RAM).
+  indexWarnMb: number;
 }
 
 const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -64,6 +69,7 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   ignorePatterns: "",
   manifestFilename: "_manifest.md",
   reviewContainer: "sidebar",
+  indexWarnMb: 256,
 };
 
 // Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
@@ -305,6 +311,9 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       manifest: {
         filename: s.manifestFilename,
       },
+      index: {
+        warnMb: s.indexWarnMb,
+      },
     });
   }
 }
@@ -353,6 +362,22 @@ export default class VaultMaintenancePlugin extends Plugin {
         filename: this.pluginSettings.manifestFilename,
       },
     });
+
+    // Wire the sql.js DB host: vault-file I/O via the adapter (the vault API
+    // — removes the better-sqlite3 direct-filesystem trigger), worker spawned
+    // from the embedded bundle, wasm read from the plugin dir. The upgrade
+    // hook fires once when a legacy index is retired to
+    // .note-maintainer/legacy/. It must NOT rebuild: a rebuild fired from
+    // inside the DB open path re-entered ensureChannel and recursed until
+    // the renderer ran out of wasm memory (~108 nested sql.js workers). The
+    // build that detected the legacy file already continues with a fresh
+    // index (derived data — a deterministic one-time rebuild); for other
+    // commands (clean/sort/chat) the fresh index fills on the next build.
+    setDefaultDbHost(createObsidianDbHost(this.app.vault.adapter, vaultPath, {
+      onIndexUpgraded: async () => {
+        new Notice("Index engine upgraded — legacy index retired to .note-maintainer/legacy/ (one-time).");
+      },
+    }));
 
     // Register the sidebar review view so Obsidian can instantiate
     // vault-ease-of-maintenance review leaves.

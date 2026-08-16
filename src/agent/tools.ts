@@ -14,7 +14,12 @@ import {
 } from "./engine";
 import { Embedder } from "../indexer/embedder";
 import { DatabaseManager } from "../indexer/db";
+import type { SearchResult } from "../indexer/db";
 import { buildChatContext } from "./chat_context";
+import { applyOps } from "./tools_apply_edits";
+import type { ApplyEditsArgs } from "./tools_apply_edits";
+// Re-export the wire shapes so importers (engine.ts, tests) keep their paths.
+export type { EditOp, OpAnchor, ApplyEditsArgs } from "./tools_apply_edits";
 import type { ChatQueryResult } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -107,7 +112,12 @@ export async function searchIndex(query: string, topK: number = 5): Promise<stri
     const embedder = new Embedder(settings);
     const queryEmb = await embedder.embed(query);
     const db = new DatabaseManager(settings.dbPath);
-    const results = db.searchSimilar(queryEmb, topK);
+    let results: SearchResult[];
+    try {
+      results = await db.searchSimilar(queryEmb, topK);
+    } finally {
+      await db.close();
+    }
     if (results.length === 0) {
       chatSearchResults = [];
       return "NO_RESULTS";
@@ -133,61 +143,9 @@ export async function searchIndex(query: string, topK: number = 5): Promise<stri
 // apply_edits — the ONLY mutation tool
 // ---------------------------------------------------------------------------
 
-// Edit operation JSON produced by the LLM tool call (validated at runtime).
-export interface OpAnchor {
-  start?: number;
-  end?: number;
-  before_line?: number;
-}
-
-export interface EditOp {
-  op: string;
-  kind?: string;
-  anchor?: OpAnchor;
-  text?: string;
-  reason?: string;
-}
-
-function validateOp(op: EditOp, lines: string[]): string | null {
-  const kind = op.op;
-  const anchor: OpAnchor = op.anchor || {};
-  const maxLine = lines.length;
-
-  if (!["join_lines", "insert_header", "remove_span", "collapse_blanks", "insert_flag"].includes(kind)) {
-    return `UNKNOWN_OP: ${kind}`;
-  }
-
-  for (const key of ["start", "end", "before_line"] as const) {
-    const val = anchor[key];
-    if (val !== undefined && (typeof val !== "number" || val < 1 || val > maxLine + 10)) {
-      return `INVALID_ANCHOR: ${key}=${val} (max_line=${maxLine})`;
-    }
-  }
-
-  const s = anchor.start;
-  const e = anchor.end;
-  if (s !== undefined && e !== undefined && s > e) {
-    return `INVALID_RANGE: start=${s} > end=${e}`;
-  }
-
-  if (kind === "remove_span") {
-    const validKinds = ["tag", "properties_block"];
-    if (!validKinds.includes(op.kind || "")) {
-      return `INVALID_KIND: ${op.kind} (expected ${validKinds.join(", ")})`;
-    }
-  }
-
-  return null;
-}
-
-// Wire boundary: the LLM tool-call args arrive as one parsed JSON object
-// (see ToolFn in llm.ts). The double cast through unknown is the canonical
-// untrusted-wire idiom — validateOp below guards op/kind/anchor shapes, so
-// do not trust the wire beyond this point.
-export interface ApplyEditsArgs {
-  handle: string;
-  ops: EditOp[];
-}
+// Edit application — the pure op pipeline lives in tools_apply_edits.ts
+// (applyOps); the wire boundary stays here: resolve the handle, snapshot,
+// run ops, write (or preview), validate, and return a receipt.
 
 export function applyEdits(args: Record<string, unknown>): string {
   const { handle, ops } = args as unknown as ApplyEditsArgs;
@@ -201,114 +159,38 @@ export function applyEdits(args: Record<string, unknown>): string {
 
   // Snapshot before
   const before = Snapshot.take(filePath, reg.io);
-  let lines = before.content.split("\n");
+  const applied = applyOps(ops, before.content.split("\n"));
 
-  // Validate ops before applying
-  const rejected: Array<{ op: string; reason: string }> = [];
-  const validOps: EditOp[] = [];
-
-  for (const op of ops) {
-    const err = validateOp(op, lines);
-    if (err) {
-      rejected.push({ op: op.op, reason: err });
-    } else {
-      validOps.push(op);
-    }
-  }
-
-  if (rejected.length > 0 && validOps.length === 0) {
+  if (applied.rejected.length > 0 && applied.validOps.length === 0) {
     return JSON.stringify({
       error: "ALL_OPS_REJECTED",
-      rejected,
+      rejected: applied.rejected,
       file_unchanged: true,
     });
   }
 
-  // Apply valid ops in order
-  let offset = 0;
-  const diffStat: Record<string, number> = {};
-
-  for (const op of validOps) {
-    const kind = op.op;
-    diffStat[kind] = (diffStat[kind] || 0) + 1;
-    const anchor: OpAnchor = op.anchor || {};
-
-    if (kind === "join_lines") {
-      const s = Number(anchor.start) - 1 + offset;
-      const e = Number(anchor.end) - 1 + offset;
-      lines[s] = lines.slice(s, e + 1).map((l: string) => l.trim()).join(" ");
-      lines.splice(s + 1, e - s);
-      offset -= e - s;
-    } else if (kind === "insert_header") {
-      const idx = Number(anchor.before_line) - 1 + offset;
-      lines.splice(idx, 0, op.text || "");
-      offset += 1;
-    } else if (kind === "remove_span") {
-      const s = Number(anchor.start) - 1 + offset;
-      const e = Number(anchor.end) - 1 + offset;
-      lines.splice(s, e - s + 1);
-      offset -= e - s + 1;
-    } else if (kind === "collapse_blanks") {
-      const s = Number(anchor.start) - 1 + offset;
-      const e = Number(anchor.end) - 1 + offset;
-      const blankCount = lines.slice(s, Math.min(e + 1, lines.length))
-        .filter((l: string) => !l.trim()).length;
-      if (blankCount > 1) {
-        let keptOne = false;
-        const newLines = lines.slice(0, s);
-        for (let i = s; i < Math.min(e + 1, lines.length); i++) {
-          if (!lines[i].trim()) {
-            if (!keptOne) {
-              newLines.push("");
-              keptOne = true;
-            }
-          } else {
-            newLines.push(lines[i]);
-          }
-        }
-        if (e + 1 < lines.length) {
-          newLines.push(...lines.slice(e + 1));
-        }
-        lines = newLines;
-      }
-    } else if (kind === "insert_flag") {
-      const idx = Number(anchor.before_line) - 1 + offset;
-      const flag = `<!-- review: ${op.reason || "flag"} -->`;
-      lines.splice(idx, 0, flag);
-      offset += 1;
-    }
-  }
-
   // Write result atomically (confined to the vault)
-  const result = lines.join("\n");
+  const result = applied.lines.join("\n");
   const rel = path.relative(reg.vaultRoot, filePath);
   reg.io.writeTextAtomic(rel, result);
 
   // Snapshot after
   const after = Snapshot.take(filePath, reg.io);
 
-  // Run validators
-  const sanctionWords: string[] = [];
-  for (const op of ops) {
-    if (op.op === "remove_span" && ["tag", "properties_block"].includes(op.kind || "")) {
-      sanctionWords.push(op.kind || "");
-    }
-  }
-
   const validationResults: Record<string, [boolean, string]> = {
-    word_conservation: Validators.wordConservation(before.content, result, sanctionWords),
+    word_conservation: Validators.wordConservation(before.content, result, applied.sanctionWords),
     headers_preserved: Validators.headersPreserved(before.content, result),
     protected_spans: Validators.protectedSpansIntact(before.content, result),
-    join_punctuation: Validators.joinPunctuation(validOps, lines),
+    join_punctuation: Validators.joinPunctuation(applied.validOps, applied.lines),
   };
 
   const receipt = Receipt.create(
     handle,
     before.hash,
     after.hash,
-    validOps.length,
-    rejected.length,
-    diffStat,
+    applied.validOps.length,
+    applied.rejected.length,
+    applied.diffStat,
     validationResults,
   );
 
@@ -333,107 +215,34 @@ export function applyEditsImpl(args: Record<string, unknown>): string {
   }
 
   const before = Snapshot.take(filePath, reg.io);
-  let lines = before.content.split("\n");
+  const applied = applyOps(ops, before.content.split("\n"));
 
-  const rejected: Array<{ op: string; reason: string }> = [];
-  const validOps: EditOp[] = [];
-
-  for (const op of ops) {
-    const err = validateOp(op, lines);
-    if (err) {
-      rejected.push({ op: op.op, reason: err });
-    } else {
-      validOps.push(op);
-    }
-  }
-
-  if (rejected.length > 0 && validOps.length === 0) {
+  if (applied.rejected.length > 0 && applied.validOps.length === 0) {
     lastPreviewResult = before.content;
     return JSON.stringify({
       error: "ALL_OPS_REJECTED",
-      rejected,
+      rejected: applied.rejected,
       file_unchanged: true,
     });
   }
 
-  let offset = 0;
-  const diffStat: Record<string, number> = {};
-
-  for (const op of validOps) {
-    const kind = op.op;
-    diffStat[kind] = (diffStat[kind] || 0) + 1;
-    const anchor: OpAnchor = op.anchor || {};
-
-    if (kind === "join_lines") {
-      const s = Number(anchor.start) - 1 + offset;
-      const e = Number(anchor.end) - 1 + offset;
-      lines[s] = lines.slice(s, e + 1).map((l: string) => l.trim()).join(" ");
-      lines.splice(s + 1, e - s);
-      offset -= e - s;
-    } else if (kind === "insert_header") {
-      const idx = Number(anchor.before_line) - 1 + offset;
-      lines.splice(idx, 0, op.text || "");
-      offset += 1;
-    } else if (kind === "remove_span") {
-      const s = Number(anchor.start) - 1 + offset;
-      const e = Number(anchor.end) - 1 + offset;
-      lines.splice(s, e - s + 1);
-      offset -= e - s + 1;
-    } else if (kind === "collapse_blanks") {
-      const s = Number(anchor.start) - 1 + offset;
-      const e = Number(anchor.end) - 1 + offset;
-      const blankCount = lines.slice(s, Math.min(e + 1, lines.length))
-        .filter((l: string) => !l.trim()).length;
-      if (blankCount > 1) {
-        let keptOne = false;
-        const newLines = lines.slice(0, s);
-        for (let i = s; i < Math.min(e + 1, lines.length); i++) {
-          if (!lines[i].trim()) {
-            if (!keptOne) {
-              newLines.push("");
-              keptOne = true;
-            }
-          } else {
-            newLines.push(lines[i]);
-          }
-        }
-        if (e + 1 < lines.length) {
-          newLines.push(...lines.slice(e + 1));
-        }
-        lines = newLines;
-      }
-    } else if (kind === "insert_flag") {
-      const idx = Number(anchor.before_line) - 1 + offset;
-      const flag = `<!-- review: ${op.reason || "flag"} -->`;
-      lines.splice(idx, 0, flag);
-      offset += 1;
-    }
-  }
-
-  const result = lines.join("\n");
+  const result = applied.lines.join("\n");
   const afterHash = crypto.createHash("sha1").update(result).digest("hex").slice(0, 12);
 
-  const sanctionWords: string[] = [];
-  for (const op of ops) {
-    if (op.op === "remove_span" && ["tag", "properties_block"].includes(op.kind || "")) {
-      sanctionWords.push(op.kind || "");
-    }
-  }
-
   const validationResults: Record<string, [boolean, string]> = {
-    word_conservation: Validators.wordConservation(before.content, result, sanctionWords),
+    word_conservation: Validators.wordConservation(before.content, result, applied.sanctionWords),
     headers_preserved: Validators.headersPreserved(before.content, result),
     protected_spans: Validators.protectedSpansIntact(before.content, result),
-    join_punctuation: Validators.joinPunctuation(validOps, lines),
+    join_punctuation: Validators.joinPunctuation(applied.validOps, applied.lines),
   };
 
   const receipt = Receipt.create(
     handle,
     before.hash,
     afterHash,
-    validOps.length,
-    rejected.length,
-    diffStat,
+    applied.validOps.length,
+    applied.rejected.length,
+    applied.diffStat,
     validationResults,
   );
 
@@ -442,7 +251,7 @@ export function applyEditsImpl(args: Record<string, unknown>): string {
   return JSON.stringify(receipt.toDict(), null, 2);
 }
 
-// ---------------------------------------------------------------------------
+
 // Tool schemas
 // ---------------------------------------------------------------------------
 

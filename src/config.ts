@@ -45,6 +45,13 @@ export interface PreviewSettings {
   ttlMinutes: number;
 }
 
+// Index-size warning threshold (index.warn_mb in config.yaml). When the
+// exported index file exceeds it, DatabaseManager warns: sql.js builds grow
+// ~10× the file size in RAM, so a big index is a RAM event, not just disk.
+export interface IndexSettings {
+  warnMb: number;
+}
+
 export interface Settings {
   vaultPath: string;
   configDir: string;
@@ -58,6 +65,7 @@ export interface Settings {
   query: QuerySettings;
   agent: AgentSettings;
   preview: PreviewSettings;
+  index: IndexSettings;
 }
 
 export function defaultSettings(): Settings {
@@ -90,6 +98,9 @@ export function defaultSettings(): Settings {
       enabled: true,
       ttlMinutes: 30,
     },
+    index: {
+      warnMb: 256,
+    },
   };
 }
 
@@ -115,6 +126,9 @@ export function updateSettings(partial: Partial<Settings>): void {
   }
   if (partial.preview) {
     settings.preview = { ...settings.preview, ...partial.preview };
+  }
+  if (partial.index) {
+    settings.index = { ...settings.index, ...partial.index };
   }
 }
 

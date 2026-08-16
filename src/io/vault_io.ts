@@ -10,10 +10,10 @@
 //      must resolve inside the vault root, which defeats symlink escapes
 //      (a symlink inside the vault pointing at a directory outside it).
 //
-// The one documented exception to confinement is the better-sqlite3 native
-// module, which opens settings.dbPath directly (inside the vault, verified
-// via absPath()). The module itself is the native binding — VaultIO never
-// hands out an unverified absolute path.
+// The database index no longer touches this layer in production: the main
+// thread reads/writes it through app.vault.adapter (see src/indexer/db_host.ts).
+// VaultIO remains the fs chokepoint for the Node/plain-Node paths (tests) and
+// for the vault content reads the indexer still does synchronously.
 
 import * as crypto from "crypto";
 import * as fs from "fs";
@@ -87,6 +87,15 @@ export class VaultIO {
     const targetAbs = this.absFor(normalized);
     const tmpAbs = this.tmpPathFor(targetAbs);
     fs.writeFileSync(tmpAbs, content, "utf-8");
+    fs.renameSync(tmpAbs, targetAbs);
+  }
+
+  writeBinaryAtomic(rel: string, bytes: Uint8Array): void {
+    const normalized = this.resolveRel(rel);
+    this.mkdirp(this.parentRel(normalized));
+    const targetAbs = this.absFor(normalized);
+    const tmpAbs = this.tmpPathFor(targetAbs);
+    fs.writeFileSync(tmpAbs, bytes);
     fs.renameSync(tmpAbs, targetAbs);
   }
 
@@ -177,7 +186,8 @@ export class VaultIO {
     return { files, dirs };
   }
 
-  /** Guarded absolute path — the single exception: better-sqlite3 opens it. */
+  /** Guarded absolute path (Node-path callers; production DB I/O goes
+   *  through the vault adapter instead — see src/indexer/db_host.ts). */
   absPath(rel: string): string {
     return this.absFor(rel);
   }

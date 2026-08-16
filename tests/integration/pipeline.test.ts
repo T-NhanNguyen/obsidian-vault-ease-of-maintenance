@@ -1,24 +1,41 @@
 // Integration tests — full pipeline with the fake embedder.
-// Ported from tests/integration/test_pipeline.py
+// Ported from tests/integration/test_pipeline.py (better-sqlite3 era).
 
 import { describe, it, expect, beforeAll } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import initSqlJs from "sql.js";
 import { FakeEmbedder } from "../fixtures/fake_embedder";
 import { Settings } from "../../src/config";
 import { Indexer } from "../../src/indexer/indexer";
-import * as path from "path";
-import * as fs from "fs";
-import * as os from "os";
-import Database from "better-sqlite3";
 
 // Path to the sample vault fixture (original repo, sibling directory)
 const FIXTURE_VAULT_DIR = path.resolve(
   __dirname, "..", "..", "..", "notes-maintainer", "tests", "fixtures", "vaults", "sample"
 );
 
+let SQL: Awaited<ReturnType<typeof initSqlJs>>;
+
+beforeAll(async () => {
+  SQL = await initSqlJs();
+});
+
 function count(dbPath: string, table: string): number {
-  const conn = new Database(dbPath);
+  const conn = new SQL.Database(fs.readFileSync(dbPath));
   try {
-    return (conn.prepare(`SELECT COUNT(*) FROM ${table}`).get() as any)["COUNT(*)"];
+    const row = conn.exec(`SELECT COUNT(*) FROM ${table}`)[0]?.values[0]?.[0];
+    return typeof row === "number" ? row : 0;
+  } finally {
+    conn.close();
+  }
+}
+
+function countEmbedded(dbPath: string): number {
+  const conn = new SQL.Database(fs.readFileSync(dbPath));
+  try {
+    const row = conn.exec("SELECT COUNT(*) FROM SECTIONS WHERE embedding IS NOT NULL")[0]?.values[0]?.[0];
+    return typeof row === "number" ? row : 0;
   } finally {
     conn.close();
   }
@@ -36,8 +53,9 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
     embedding: { model: "test", dimensions: 64 },
     manifest: { filename: "_manifest.md" },
     query: { topK: 5 },
-    agent: { model: "test" },
+    agent: { model: "test", enableThinking: false },
     preview: { enabled: true, ttlMinutes: 30 },
+    index: { warnMb: 256 },
   };
 }
 
@@ -85,22 +103,14 @@ describe("FullBuild", () => {
   it("build sections have embeddings", async () => {
     const indexer = new Indexer(settings, fakeEmbedder);
     await indexer.build();
-    const conn = new Database(settings.dbPath);
-    try {
-      const row = conn.prepare(
-        "SELECT COUNT(*) FROM SECTIONS WHERE embedding IS NOT NULL"
-      ).get() as any;
-      expect(row["COUNT(*)"]).toBe(20);
-    } finally {
-      conn.close();
-    }
+    expect(countEmbedded(settings.dbPath)).toBe(20);
   });
 
   it("manifest communities seeded", async () => {
     const indexer = new Indexer(settings, fakeEmbedder);
     await indexer.build();
-    const communities = indexer.db.getAllCommunities();
-    const seeds = new Set(communities.map((c: any) => c.seed_source));
+    const communities = await indexer.db.getAllCommunities();
+    const seeds = new Set(communities.map((c) => c.seed_source));
     expect(seeds).toEqual(new Set(["manifest"]));
   });
 });
@@ -181,7 +191,7 @@ describe("Incremental", () => {
     fs.writeFileSync(path.join(vaultDir, "a.md"), "# A\n\nBody changed.\n");
 
     await indexer.incremental();
-    const meta = indexer.db.getLatestMeta();
+    const meta = await indexer.db.getLatestMeta();
     expect(meta).not.toBeNull();
   });
 });
@@ -201,10 +211,10 @@ describe("DegradedMode", () => {
     const indexer = new Indexer(settings, fakeEmbedder);
     await indexer.build();
 
-    const sections = indexer.db.getSectionsForFile(
+    const sections = await indexer.db.getSectionsForFile(
       "20_AI_Speculations/inference-cost-curve.md"
     );
     expect(sections.length).toBeGreaterThan(0);
-    expect((sections[0] as any).node_key.endsWith("::")).toBe(true);
+    expect(sections[0].node_key.endsWith("::")).toBe(true);
   });
 });
