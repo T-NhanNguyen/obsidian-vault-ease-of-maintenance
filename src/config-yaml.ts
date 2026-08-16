@@ -34,9 +34,11 @@ export interface YamlPluginSettings {
   queryDepth?: number;
   queryMaxFanOut?: number;
   queryMaxSeeds?: number;
+  queryTopReports?: number;
   graphClusterThreshold?: number;
   graphInferredThreshold?: number;
   graphInferredMaxEdgesPerSection?: number;
+  reportsContextCapTokens?: number;
 }
 
 interface YamlSection {
@@ -102,6 +104,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
   const index = tree["index"] as YamlSection | undefined;
   const query = tree["query"] as YamlSection | undefined;
   const graph = tree["graph"] as YamlSection | undefined;
+  const reports = tree["reports"] as YamlSection | undefined;
 
   const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
   const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
@@ -124,9 +127,11 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     queryDepth: num(query?.["depth"]),
     queryMaxFanOut: num(query?.["max_fan_out"]),
     queryMaxSeeds: num(query?.["max_seeds"]),
+    queryTopReports: num(query?.["top_reports"]),
     graphClusterThreshold: num(graph?.["cluster_threshold"]),
     graphInferredThreshold: num(graph?.["inferred_threshold"]),
     graphInferredMaxEdgesPerSection: num(graph?.["inferred_max_edges_per_section"]),
+    reportsContextCapTokens: num(reports?.["context_cap_tokens"]),
   };
 }
 

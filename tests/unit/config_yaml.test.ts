@@ -45,11 +45,15 @@ preview:
 
 query:
   top_k: 5
+  top_reports: 3
 
 graph:
   cluster_threshold: 0.5
   inferred_threshold: 0.7
   inferred_max_edges_per_section: 3
+
+reports:
+  context_cap_tokens: 3000
 `;
 
 describe("parseConfigYaml", () => {
@@ -68,13 +72,15 @@ describe("parseConfigYaml", () => {
     expect(cfg.ignorePatterns).toBe("");
   });
 
-  it("maps the query and graph tuning sections", () => {
+  it("maps the query, graph, and reports tuning sections", () => {
     const cfg = parseConfigYaml(CONFIG_FIXTURE);
     expect(cfg.queryTopK).toBe(5);
+    expect(cfg.queryTopReports).toBe(3);
     expect(cfg.queryDepth).toBe(undefined); // not in the fixture — defaults apply
     expect(cfg.graphClusterThreshold).toBe(0.5);
     expect(cfg.graphInferredThreshold).toBe(0.7);
     expect(cfg.graphInferredMaxEdgesPerSection).toBe(3);
+    expect(cfg.reportsContextCapTokens).toBe(3000);
 
     const tuned = parseConfigYaml(`
 query:
@@ -82,18 +88,23 @@ query:
   depth: 2
   max_fan_out: 12
   max_seeds: 4
+  top_reports: 6
 graph:
   cluster_threshold: 0.6
   inferred_threshold: 0.8
   inferred_max_edges_per_section: 5
+reports:
+  context_cap_tokens: 6000
 `);
     expect(tuned.queryTopK).toBe(10);
     expect(tuned.queryDepth).toBe(2);
     expect(tuned.queryMaxFanOut).toBe(12);
     expect(tuned.queryMaxSeeds).toBe(4);
+    expect(tuned.queryTopReports).toBe(6);
     expect(tuned.graphClusterThreshold).toBe(0.6);
     expect(tuned.graphInferredThreshold).toBe(0.8);
     expect(tuned.graphInferredMaxEdgesPerSection).toBe(5);
+    expect(tuned.reportsContextCapTokens).toBe(6000);
   });
 
   it("maps the per-feature thinking section", () => {

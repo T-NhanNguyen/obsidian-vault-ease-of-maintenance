@@ -112,7 +112,11 @@ export class Indexer {
       // to local retrieval.
       if (this.reportLlm) {
         try {
-          await generateCommunityReports(this.db, this.reportLlm);
+          await generateCommunityReports(this.db, this.reportLlm, {
+            // `?.` guard: partial Settings in tests degrade to the module
+            // default (DEFAULT_REPORT_CONTEXT_CAP_TOKENS).
+            contextCapTokens: this.settings.reports?.contextCapTokens,
+          });
         } catch (e) {
           console.warn(
             `[build] Community report generation failed (${errorMessage(e)}) — global mode unavailable.`,

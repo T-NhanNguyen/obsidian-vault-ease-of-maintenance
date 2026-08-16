@@ -59,15 +59,18 @@ interface PluginSettings {
   // exported index exceeds it, DatabaseManager warns (sql.js builds hold ~10×
   // the file size in RAM).
   indexWarnMb: number;
-  // GraphRAG tuning — config.yaml query: + graph: sections (single source
-  // of truth; deliberately NOT in the Settings tab — advanced tuning).
+  // GraphRAG tuning — config.yaml query: + graph: + reports: sections
+  // (single source of truth; deliberately NOT in the Settings tab —
+  // advanced tuning).
   queryTopK: number;
   queryDepth: number;
   queryMaxFanOut: number;
   queryMaxSeeds: number;
+  queryTopReports: number;
   graphClusterThreshold: number;
   graphInferredThreshold: number;
   graphInferredMaxEdgesPerSection: number;
+  reportsContextCapTokens: number;
 }
 
 const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -88,9 +91,11 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   queryDepth: 1,
   queryMaxFanOut: 8,
   queryMaxSeeds: 8,
+  queryTopReports: 3,
   graphClusterThreshold: 0.5,
   graphInferredThreshold: 0.7,
   graphInferredMaxEdgesPerSection: 3,
+  reportsContextCapTokens: 3000,
 };
 
 // Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
@@ -344,11 +349,15 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         depth: s.queryDepth,
         maxFanOut: s.queryMaxFanOut,
         maxSeeds: s.queryMaxSeeds,
+        topReports: s.queryTopReports,
       },
       graph: {
         clusterThreshold: s.graphClusterThreshold,
         inferredThreshold: s.graphInferredThreshold,
         inferredMaxEdgesPerSection: s.graphInferredMaxEdgesPerSection,
+      },
+      reports: {
+        contextCapTokens: s.reportsContextCapTokens,
       },
     });
   }
@@ -406,11 +415,15 @@ export default class VaultMaintenancePlugin extends Plugin {
         depth: this.pluginSettings.queryDepth,
         maxFanOut: this.pluginSettings.queryMaxFanOut,
         maxSeeds: this.pluginSettings.queryMaxSeeds,
+        topReports: this.pluginSettings.queryTopReports,
       },
       graph: {
         clusterThreshold: this.pluginSettings.graphClusterThreshold,
         inferredThreshold: this.pluginSettings.graphInferredThreshold,
         inferredMaxEdgesPerSection: this.pluginSettings.graphInferredMaxEdgesPerSection,
+      },
+      reports: {
+        contextCapTokens: this.pluginSettings.reportsContextCapTokens,
       },
     });
 

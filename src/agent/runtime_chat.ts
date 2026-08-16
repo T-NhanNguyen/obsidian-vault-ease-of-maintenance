@@ -101,6 +101,7 @@ export async function runChatQuery(
         db,
         new ChatReportLlm({ enableThinking: thinkingEnabledFor("chat") }),
         question,
+        { topReports: settings.query?.topReports },
       );
     } finally {
       await db.close();

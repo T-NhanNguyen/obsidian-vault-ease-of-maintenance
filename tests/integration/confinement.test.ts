@@ -26,7 +26,7 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
     api: { baseUrl: "http://localhost:9999/v1", apiKey: "test-key" },
     embedding: { model: "test", dimensions: 64 },
     manifest: { filename: "_manifest.md" },
-    query: { topK: 5, depth: 1, maxFanOut: 8, maxSeeds: 8 },
+    query: { topK: 5, depth: 1, maxFanOut: 8, maxSeeds: 8, topReports: 3 },
     agent: { model: "test", thinking: { chat: false, build: false, sort: false } },
     preview: { enabled: true, ttlMinutes: 30 },
     index: { warnMb: 256 },
@@ -35,6 +35,7 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
       inferredThreshold: 0.7,
       inferredMaxEdgesPerSection: 3,
     },
+    reports: { contextCapTokens: 3000 },
   };
 }
 

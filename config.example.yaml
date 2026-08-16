@@ -60,6 +60,9 @@ query:
   depth: 1                             # BFS levels past the resolved seeds (hybrid search).
   max_fan_out: 8                       # max outgoing edges followed per key per level.
   max_seeds: 8                         # max resolver seeds to expand from.
+  top_reports: 3                       # max community reports grounding the global-mode
+                                       # answer (overview questions, Phase 4). Higher =
+                                       # broader overview, more LLM tokens per question.
 
 # Graph-build tuning — shapes the stored EDGES + COMMUNITIES. Highest-impact
 # knobs on GraphRAG behavior; deliberately NOT in the Settings tab.
@@ -71,6 +74,15 @@ graph:
   cluster_threshold: 0.5
   inferred_threshold: 0.7
   inferred_max_edges_per_section: 3
+
+# Community-report tuning — the build-side LLM report pass (Phase 4).
+# Deliberately NOT in the Settings tab (advanced tuning).
+#   context_cap_tokens: per-community token budget for the member-section
+#     context a report is generated from. Higher = richer reports (better
+#     global-mode answers), more LLM tokens per build. Sections beyond the
+#     cap are dropped in node_key order.
+reports:
+  context_cap_tokens: 3000
 
 index:
   warn_mb: 256                # warning threshold for the index file size (MB). sql.js

@@ -59,7 +59,7 @@ const FIXTURE_FILES: Record<string, string> = {
 // global synthesis prompt (reports do not echo section bodies).
 const RAW_SECTION_BODIES = ["Efficiency above 60 percent", "Cold brew ratios"];
 
-function makeSettings(vaultPath: string, dbPath: string): Settings {
+function makeSettings(vaultPath: string, dbPath: string, reports?: Partial<Settings["reports"]>): Settings {
   return {
     vaultPath,
     configDir: "",
@@ -70,7 +70,7 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
     api: { baseUrl: "http://localhost:9999/v1", apiKey: "test-key" },
     embedding: { model: "test", dimensions: 64 },
     manifest: { filename: "_manifest.md" },
-    query: { topK: 5, depth: 1, maxFanOut: 8, maxSeeds: 8 },
+    query: { topK: 5, depth: 1, maxFanOut: 8, maxSeeds: 8, topReports: 3 },
     agent: { model: "test", thinking: { chat: false, build: false, sort: false } },
     preview: { enabled: true, ttlMinutes: 30 },
     index: { warnMb: 256 },
@@ -79,6 +79,7 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
       inferredThreshold: 0.7,
       inferredMaxEdgesPerSection: 3,
     },
+    reports: { contextCapTokens: 3000, ...reports },
   };
 }
 
@@ -117,7 +118,7 @@ interface BuiltHarness {
   reportLlm: BuildReportLlm;
 }
 
-async function buildWithReports(): Promise<BuiltHarness> {
+async function buildWithReports(reports?: Partial<Settings["reports"]>): Promise<BuiltHarness> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-reports-"));
   const vaultDir = path.join(tmpDir, "vault");
   for (const [relPath, content] of Object.entries(FIXTURE_FILES)) {
@@ -125,7 +126,7 @@ async function buildWithReports(): Promise<BuiltHarness> {
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content.replace(/^\n+/, ""));
   }
-  const settings = makeSettings(vaultDir, path.join(tmpDir, "index.db"));
+  const settings = makeSettings(vaultDir, path.join(tmpDir, "index.db"), reports);
   const fakeEmbedder = new FakeEmbedder(64);
   const reportLlm = new BuildReportLlm();
   const indexer = new Indexer(settings, fakeEmbedder, reportLlm);
@@ -283,6 +284,36 @@ describe("Build-side community reports", () => {
     } finally {
       await db.close();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ReportsConfigTuning — config.yaml `reports:` section must actually reach
+// the build (single source of truth; the GraphConfigTuning pattern).
+// ---------------------------------------------------------------------------
+
+describe("ReportsConfigTuning (config.yaml reports: section reaches the build)", () => {
+  it("reports.context_cap_tokens tunes the per-community context budget", async () => {
+    // Every fixture section body is longer than 20 chars (5 tokens) — with a
+    // 5-token cap NOTHING fits, so no report is generated (zero LLM calls,
+    // table empty). Deterministic: the cap drops whole sections in node_key
+    // order, independent of how the sections clustered.
+    const tiny = await buildWithReports({ contextCapTokens: 5 });
+    expect(tiny.reportLlm.seenUsers).toHaveLength(0);
+    const tinyDb = new DatabaseManager(tiny.settings.dbPath);
+    try {
+      expect(await tinyDb.getAllCommunityReports()).toEqual([]);
+    } finally {
+      await tinyDb.close();
+    }
+
+    // Default 3000-token cap: all four fixture sections fit their community
+    // prompts (monotonic by construction — the cap only ever drops sections).
+    const roomy = await buildWithReports();
+    const headings = roomy.reportLlm.seenUsers.flatMap((user) =>
+      user.split("\n").filter((line) => line.startsWith("### ")),
+    );
+    expect(headings).toHaveLength(4);
   });
 });
 

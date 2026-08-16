@@ -35,6 +35,9 @@ export interface QuerySettings {
   maxFanOut: number;
   /** Max resolver seeds to expand from (graph_search.ts). */
   maxSeeds: number;
+  /** Max community reports grounding the global-mode answer
+   * (community_reports.ts — Phase 4). */
+  topReports: number;
 }
 
 // Graph-build tuning — the knobs that shape the stored graph (EDGES +
@@ -49,6 +52,16 @@ export interface GraphSettings {
   inferredThreshold: number;
   /** Max inferred edges emitted per section (graph.ts). */
   inferredMaxEdgesPerSection: number;
+}
+
+// Community-report tuning — config.yaml `reports:` section. Drives the
+// build-side LLM report pass (community_reports.ts — Phase 4 of the GraphRAG
+// buildout). YAML-only like graph: (advanced tuning; Settings tab untouched).
+export interface ReportsSettings {
+  /** Per-community token budget for the member-section context a report is
+   * generated from (community_reports.ts). Higher = richer reports, more
+   * LLM tokens per build. */
+  contextCapTokens: number;
 }
 
 export interface AgentSettings {
@@ -94,6 +107,7 @@ export interface Settings {
   preview: PreviewSettings;
   index: IndexSettings;
   graph: GraphSettings;
+  reports: ReportsSettings;
 }
 
 export function defaultSettings(): Settings {
@@ -120,6 +134,7 @@ export function defaultSettings(): Settings {
       depth: 1,
       maxFanOut: 8,
       maxSeeds: 8,
+      topReports: 3,
     },
     agent: {
       model: "",
@@ -140,6 +155,9 @@ export function defaultSettings(): Settings {
       clusterThreshold: 0.5,
       inferredThreshold: 0.7,
       inferredMaxEdgesPerSection: 3,
+    },
+    reports: {
+      contextCapTokens: 3000,
     },
   };
 }
@@ -172,6 +190,9 @@ export function updateSettings(partial: Partial<Settings>): void {
   }
   if (partial.graph) {
     settings.graph = { ...settings.graph, ...partial.graph };
+  }
+  if (partial.reports) {
+    settings.reports = { ...settings.reports, ...partial.reports };
   }
 }
 
