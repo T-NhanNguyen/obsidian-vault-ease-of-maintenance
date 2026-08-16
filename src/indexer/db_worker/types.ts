@@ -149,6 +149,43 @@ export interface SearchResult {
   score: number;
 }
 
+/** A SECTIONS row joined with its FILES row, WITHOUT the embedding blob — the
+ * light read shape for text/heading-based lookups (resolver + graph hits). */
+export interface SectionSearchRow {
+  node_key: string;
+  file_id: string;
+  heading_path: string | null;
+  heading_text: string | null;
+  line_start: number | null;
+  line_end: number | null;
+  text: string | null;
+  content_hash: string | null;
+  path: string;
+  title: string;
+  content_type: string;
+  rollup_summary: string;
+}
+
+/** Heading-only section row — the resolver's input; never loads text/blobs. */
+export interface SectionKeyRow {
+  node_key: string;
+  file_id: string;
+  heading_path: string | null;
+  heading_text: string | null;
+}
+
+/** A row from ENTITIES (entity_id, name) — resolver's entity-name tier. */
+export interface EntityRow {
+  entity_id: string;
+  name: string;
+}
+
+/** A SECTION_ENTITIES row — maps an entity to the sections that mention it. */
+export interface SectionEntityRow {
+  section_key: string;
+  entity_id: string;
+}
+
 // generateManifest's raw-connection queries, sealed behind facade methods.
 export interface FolderFileRow {
   folder: string;

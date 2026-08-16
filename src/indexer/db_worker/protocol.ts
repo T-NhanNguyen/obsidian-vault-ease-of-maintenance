@@ -18,6 +18,7 @@ import type {
   CommunityWriteInput,
   Edge,
   EdgeRow,
+  EntityRow,
   EntityWriteInput,
   FileRow,
   FileWriteInput,
@@ -26,7 +27,10 @@ import type {
   MetaRow,
   SearchResult,
   SectionEntityInput,
+  SectionEntityRow,
+  SectionKeyRow,
   SectionRow,
+  SectionSearchRow,
   SectionSummary,
   SectionWriteInput,
   UnlinkedSection,
@@ -46,6 +50,10 @@ export interface DbMethodMap {
   getSectionsForFile: { args: [string]; result: SectionRow[] };
   getAllSections: { args: []; result: SectionSummary[] };
   searchSimilar: { args: [number[], number]; result: SearchResult[] };
+  getSectionKeys: { args: []; result: SectionKeyRow[] };
+  getAllEntities: { args: []; result: EntityRow[] };
+  getSectionsForEntities: { args: [string[]]; result: SectionEntityRow[] };
+  getSectionsByKeys: { args: [string[]]; result: SectionSearchRow[] };
   insertEntities: { args: [EntityWriteInput[]]; result: void };
   insertSectionEntities: { args: [string, SectionEntityInput[]]; result: void };
   insertEdges: { args: [Edge[]]; result: void };

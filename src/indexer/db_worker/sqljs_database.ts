@@ -29,6 +29,7 @@ import {
   CommunityWriteInput,
   Edge,
   EdgeRow,
+  EntityRow,
   EntityWriteInput,
   FileRow,
   FileWriteInput,
@@ -37,7 +38,10 @@ import {
   MetaRow,
   SearchResult,
   SectionEntityInput,
+  SectionEntityRow,
+  SectionKeyRow,
   SectionRow,
+  SectionSearchRow,
   SectionSummary,
   SectionWriteInput,
   UnlinkedSection,
@@ -463,6 +467,77 @@ export class SqlJsDatabase {
     `));
     // Pure row read above; cosine ranking lives in the embedding concern.
     return rankByCosine(queryEmbedding, rows, topK);
+  }
+
+  // ------------------------------------------------------------------
+  // Graph-search reads (query-time graph expansion — see graph_search.ts)
+  // ------------------------------------------------------------------
+
+  /** Heading-only section rows for the resolver (never loads text/blobs). */
+  getSectionKeys(): SectionKeyRow[] {
+    return queryAll<SectionKeyRow>(
+      this.conn.prepare(
+        "SELECT node_key, file_id, heading_path, heading_text FROM SECTIONS ORDER BY node_key",
+      ),
+    );
+  }
+
+  /** All entity names (the resolver's entity-name matching tier). */
+  getAllEntities(): EntityRow[] {
+    return queryAll<EntityRow>(
+      this.conn.prepare("SELECT entity_id, name FROM ENTITIES ORDER BY entity_id"),
+    );
+  }
+
+  /** The sections that mention any of the given entity ids (IN lookup). */
+  getSectionsForEntities(entityIds: string[]): SectionEntityRow[] {
+    if (entityIds.length === 0) return [];
+    return queryAll<SectionEntityRow>(
+      this.conn.prepare(
+        `SELECT section_key, entity_id FROM SECTION_ENTITIES
+         WHERE entity_id IN (${entityIds.map(() => "?").join(",")})`,
+      ),
+      entityIds,
+    );
+  }
+
+  /**
+   * Full joined rows (no embedding) for specific keys. Keys are either
+   * section keys ("file.md::Heading") or bare wikilink targets / file names
+   * ("datacenter-power-demand", "notes/a.md") — the EDGES graph stores the
+   * latter, so resolution matches sections by exact node_key or by the
+   * file's basename without the .md extension (Obsidian-style wikilinks).
+   */
+  getSectionsByKeys(keys: string[]): SectionSearchRow[] {
+    if (keys.length === 0) return [];
+    const clauses: string[] = [];
+    const params: SqlValue[] = [];
+    const sectionKeys: string[] = [];
+    for (const key of keys) {
+      if (key.includes("::")) {
+        sectionKeys.push(key);
+      } else {
+        const bare = key.endsWith(".md") ? key.slice(0, -3) : key;
+        // Exact path ("notes/a.md") or basename match in any folder ("a.md").
+        clauses.push("(s.file_id = ? OR s.file_id LIKE ?)");
+        params.push(`${bare}.md`, `%/${bare}.md`);
+      }
+    }
+    if (sectionKeys.length > 0) {
+      clauses.push(`s.node_key IN (${sectionKeys.map(() => "?").join(",")})`);
+      params.push(...sectionKeys);
+    }
+    return queryAll<SectionSearchRow>(
+      this.conn.prepare(`
+        SELECT s.node_key, s.file_id, s.heading_path, s.heading_text,
+               s.line_start, s.line_end, s.text, s.content_hash,
+               f.path, f.title, f.content_type, f.rollup_summary
+        FROM SECTIONS s JOIN FILES f ON s.file_id = f.file_id
+        WHERE (${clauses.join(" OR ")})
+        ORDER BY s.node_key
+      `),
+      params,
+    );
   }
 
   // ------------------------------------------------------------------

@@ -8,6 +8,7 @@ import { VaultIO } from "../io/vault_io";
 import { parseIgnorePatterns } from "../agent/engine";
 import { Chunker, SectionInfo } from "./chunker";
 import { DatabaseManager, FileWriteInput, SearchResult, SectionWriteInput } from "./db";
+import { hybridQuery, HybridQueryOptions } from "./graph_search";
 import { assignCommunities, computeSeedEmbeddings } from "./communities";
 import { Embedder, IEmbedder } from "./embedder";
 import { GraphBuilder } from "./graph";
@@ -208,10 +209,11 @@ export class Indexer {
   // Query
   // ------------------------------------------------------------------
 
-  async query(text: string, topK: number = 5): Promise<SearchResult[]> {
-    const queryEmbedding = await this.embedder.embed(text);
+  async query(text: string, topK: number = 5, opts?: HybridQueryOptions): Promise<SearchResult[]> {
     try {
-      return await this.db.searchSimilar(queryEmbedding, topK);
+      // Hybrid local search: cosine top-k + graph expansion over EDGES
+      // (see graph_search.ts — Phase 1 of the GraphRAG buildout).
+      return await hybridQuery(this.embedder, this.db, text, topK, opts);
     } finally {
       await this.db.close();
     }
@@ -257,34 +259,47 @@ export class Indexer {
     // Chunk into header sections
     const sections = this.chunker.chunk(fileInfo);
 
-    for (const section of sections) {
-      // Map to DB format
-      const dbSection: SectionWriteInput = {
-        nodeKey: section.nodeKey,
-        fileId: filePath,
-        headingPath: section.headingPath,
-        headingText: section.headingText,
-        lineStart: section.lineStart,
-        lineEnd: section.lineEnd,
-        text: section.text,
-        contentHash: section.contentHash,
-      };
+    const dbSections: SectionWriteInput[] = sections.map((section) => ({
+      nodeKey: section.nodeKey,
+      fileId: filePath,
+      headingPath: section.headingPath,
+      headingText: section.headingText,
+      lineStart: section.lineStart,
+      lineEnd: section.lineEnd,
+      text: section.text,
+      contentHash: section.contentHash,
+    }));
+
+    // Embed all section texts in ONE batch HTTP round trip per file
+    // (embedBatch — one request instead of one per section). On batch
+    // failure, fall back to per-section embeds so a single bad call cannot
+    // empty the whole file's embeddings (today's resilience, preserved).
+    let embeddings: number[][];
+    try {
+      embeddings = await this.embedder.embedBatch(dbSections.map((s) => s.text || ""));
+    } catch {
+      embeddings = [];
+      for (const section of dbSections) {
+        try {
+          embeddings.push(await this.embedder.embed(section.text || ""));
+        } catch {
+          embeddings.push([]);
+        }
+      }
+    }
+
+    for (let i = 0; i < sections.length; i++) {
+      const section = sections[i];
+      const embedding = embeddings[i] ?? [];
+      // Attach to BOTH the db row and the returned section object (matches
+      // Python: section["embedding"] = embedding)
+      section.embedding = embedding;
+      dbSections[i].embedding = embedding;
 
       // Extract entities
       const entities = this.graph.extract(section.text);
 
-      // Embed section text — attach to BOTH the db row and the returned
-      // section object (matches Python: section["embedding"] = embedding)
-      try {
-        const embedding = await this.embedder.embed(section.text);
-        section.embedding = embedding;
-        dbSection.embedding = embedding;
-      } catch {
-        section.embedding = [];
-        dbSection.embedding = [];
-      }
-
-      await this.db.upsertSection(dbSection);
+      await this.db.upsertSection(dbSections[i]);
 
       if (entities.length > 0) {
         await this.db.insertEntities(entities);

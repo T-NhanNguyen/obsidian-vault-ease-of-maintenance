@@ -14,6 +14,7 @@ import {
 } from "./engine";
 import { Embedder } from "../indexer/embedder";
 import { DatabaseManager } from "../indexer/db";
+import { hybridQuery } from "../indexer/graph_search";
 import type { SearchResult } from "../indexer/db";
 import { buildChatContext } from "./chat_context";
 import { applyOps } from "./tools_apply_edits";
@@ -110,11 +111,13 @@ export function getChatSearchResults(): ChatQueryResult[] {
 export async function searchIndex(query: string, topK: number = 5): Promise<string> {
   try {
     const embedder = new Embedder(settings);
-    const queryEmb = await embedder.embed(query);
     const db = new DatabaseManager(settings.dbPath);
     let results: SearchResult[];
     try {
-      results = await db.searchSimilar(queryEmb, topK);
+      // Hybrid local search (cosine + graph expansion) — the chat retrieval
+      // path; clean/sort stay on pure cosine until the merged ranking is
+      // validated (handoff Phase 1 wiring decision).
+      results = await hybridQuery(embedder, db, query, topK);
     } finally {
       await db.close();
     }

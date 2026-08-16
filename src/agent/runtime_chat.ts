@@ -18,6 +18,7 @@ import {
   getChatSearchResults,
 } from "./tools";
 import { Embedder } from "../indexer/embedder";
+import { hybridQuery } from "../indexer/graph_search";
 import { DatabaseManager } from "../indexer/db";
 import type { SearchResult } from "../indexer/db";
 import type { ChatQueryResponse } from "../types";
@@ -49,11 +50,10 @@ export const CHAT_GROUNDED_SYSTEM_PROMPT =
 
 export async function runChat(question: string): Promise<string> {
   const embedder = new Embedder(settings);
-  const q = await embedder.embed(question);
   const db = new DatabaseManager(settings.dbPath);
   let results: SearchResult[];
   try {
-    results = await db.searchSimilar(q, 5);
+    results = await hybridQuery(embedder, db, question, 5);
   } finally {
     await db.close();
   }

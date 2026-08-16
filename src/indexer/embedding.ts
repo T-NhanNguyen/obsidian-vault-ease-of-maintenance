@@ -7,24 +7,13 @@
 // thread, so it must never pull in config/http/embedder. The HTTP API client
 // (Embedder) lives in ./embedder.ts and is main-thread only.
 
-import type { SearchResult } from "./db_worker/types";
+import type { SearchResult, SectionSearchRow } from "./db_worker/types";
 
 /** A SECTIONS row joined with its FILES row — the raw input to ranking.
- * Field names match the SQL column names (snake_case) from getAsObject(). */
-export interface EmbeddingRow {
-  node_key: string;
-  file_id: string;
-  heading_path: string | null;
-  heading_text: string | null;
-  line_start: number | null;
-  line_end: number | null;
-  text: string | null;
+ * Field names match the SQL column names (snake_case) from getAsObject().
+ * This is SectionSearchRow plus the embedding blob (the vector-search read). */
+export interface EmbeddingRow extends SectionSearchRow {
   embedding: Uint8Array | null;
-  content_hash: string | null;
-  path: string;
-  title: string;
-  content_type: string;
-  rollup_summary: string;
 }
 
 /** Encode a float vector as a little-endian Float64 BLOB (SECTIONS.embedding). */
@@ -67,6 +56,30 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
+ * Map a joined SECTIONS+FILES row to a SearchResult with the given score.
+ * Shared by the pure-cosine ranker and the graph-search path (graph-only
+ * hits carry the resolver's match score instead of a cosine score).
+ */
+export function rowToSearchResult(row: SectionSearchRow, score: number): SearchResult {
+  return {
+    nodeKey: row.node_key,
+    fileId: row.file_id,
+    filePath: row.file_id,
+    headingPath: row.heading_path || "",
+    headingText: row.heading_text || "",
+    lineStart: row.line_start || 0,
+    lineEnd: row.line_end || 0,
+    text: row.text || "",
+    contentHash: row.content_hash || "",
+    fileContentHash: row.content_hash || "",
+    contentType: row.content_type || "",
+    rollupSummary: row.rollup_summary || "",
+    title: row.title || "",
+    score,
+  };
+}
+
+/**
  * Vector search: score every row against the query embedding by cosine and
  * return the top-K as SearchResults, best first. Rows without a usable
  * embedding are skipped.
@@ -82,22 +95,7 @@ export function rankByCosine(
     if (!storedEmb || storedEmb.length === 0) continue;
 
     const score = cosineSimilarity(queryEmbedding, storedEmb);
-    results.push([score, {
-      nodeKey: row.node_key,
-      fileId: row.file_id,
-      filePath: row.file_id,
-      headingPath: row.heading_path || "",
-      headingText: row.heading_text || "",
-      lineStart: row.line_start || 0,
-      lineEnd: row.line_end || 0,
-      text: row.text || "",
-      contentHash: row.content_hash || "",
-      fileContentHash: row.content_hash || "",
-      contentType: row.content_type || "",
-      rollupSummary: row.rollup_summary || "",
-      title: row.title || "",
-      score,
-    }]);
+    results.push([score, rowToSearchResult(row, score)]);
   }
 
   results.sort((a, b) => b[0] - a[0]);

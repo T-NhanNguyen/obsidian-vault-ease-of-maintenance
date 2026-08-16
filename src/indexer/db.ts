@@ -32,6 +32,7 @@ import type {
   CommunityWriteInput,
   Edge,
   EdgeRow,
+  EntityRow,
   EntityWriteInput,
   FileRow,
   FileWriteInput,
@@ -40,7 +41,10 @@ import type {
   MetaRow,
   SearchResult,
   SectionEntityInput,
+  SectionEntityRow,
+  SectionKeyRow,
   SectionRow,
+  SectionSearchRow,
   SectionSummary,
   SectionWriteInput,
   UnlinkedSection,
@@ -52,6 +56,7 @@ export type {
   CommunityWriteInput,
   Edge,
   EdgeRow,
+  EntityRow,
   EntityWriteInput,
   FileRow,
   FileWriteInput,
@@ -60,7 +65,10 @@ export type {
   MetaRow,
   SearchResult,
   SectionEntityInput,
+  SectionEntityRow,
+  SectionKeyRow,
   SectionRow,
+  SectionSearchRow,
   SectionSummary,
   SectionWriteInput,
   UnlinkedSection,
@@ -324,6 +332,26 @@ export class DatabaseManager {
 
   async searchSimilar(queryEmbedding: number[], topK: number = 5): Promise<SearchResult[]> {
     return this.callDb("searchSimilar", queryEmbedding, topK);
+  }
+
+  /** Heading-only section rows for the hybrid resolver (no text/blobs). */
+  async getSectionKeys(): Promise<SectionKeyRow[]> {
+    return this.callDb("getSectionKeys");
+  }
+
+  /** All entity names (hybrid resolver's entity-name tier). */
+  async getAllEntities(): Promise<EntityRow[]> {
+    return this.callDb("getAllEntities");
+  }
+
+  /** The sections that mention any of the given entity ids. */
+  async getSectionsForEntities(entityIds: string[]): Promise<SectionEntityRow[]> {
+    return this.callDb("getSectionsForEntities", entityIds);
+  }
+
+  /** Full joined rows (no embedding) for section keys / bare wikilink names. */
+  async getSectionsByKeys(keys: string[]): Promise<SectionSearchRow[]> {
+    return this.callDb("getSectionsByKeys", keys);
   }
 
   async insertEntities(entities: EntityWriteInput[]): Promise<void> {
