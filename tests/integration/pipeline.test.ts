@@ -41,6 +41,32 @@ function countEmbedded(dbPath: string): number {
   }
 }
 
+/** section_key → community_id, sorted for comparison across builds. */
+function communityAssignments(dbPath: string): Array<[string, string]> {
+  const conn = new SQL.Database(fs.readFileSync(dbPath));
+  try {
+    const rows = conn.exec("SELECT section_key, community_id FROM COMMUNITY_SECTIONS")[0]?.values ?? [];
+    return rows
+      .map((r) => [String(r[0]), String(r[1])] as [string, string])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  } finally {
+    conn.close();
+  }
+}
+
+/** community_id → seed_source, sorted for comparison across builds. */
+function communityRows(dbPath: string): Array<[string, string]> {
+  const conn = new SQL.Database(fs.readFileSync(dbPath));
+  try {
+    const rows = conn.exec("SELECT community_id, seed_source FROM COMMUNITIES")[0]?.values ?? [];
+    return rows
+      .map((r) => [String(r[0]), String(r[1])] as [string, string])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  } finally {
+    conn.close();
+  }
+}
+
 function makeSettings(vaultPath: string, dbPath: string): Settings {
   return {
     vaultPath,
@@ -197,11 +223,61 @@ describe("Incremental", () => {
 });
 
 describe("DegradedMode", () => {
-  it("build without manifest", async () => {
+  it("build without manifest auto-clusters communities", async () => {
     const { indexer, settings } = await indexerFactory({ "note.md": "# Hi\n\nBody.\n" });
     await indexer.build();
     expect(count(settings.dbPath, "FILES")).toBe(1);
-    expect(count(settings.dbPath, "COMMUNITIES")).toBe(0);
+    // Phase 3: an unseeded vault gets ≥1 auto community and EVERY section
+    // is assigned (the old contract of 0 communities is superseded).
+    expect(count(settings.dbPath, "COMMUNITIES")).toBeGreaterThanOrEqual(1);
+    expect(count(settings.dbPath, "COMMUNITY_SECTIONS")).toBe(count(settings.dbPath, "SECTIONS"));
+  });
+
+  it("unseeded builds are deterministic — same clusters across two builds", async () => {
+    const files = {
+      "a.md": "# Alpha\n\nbloom energy fuel cells overview.\n\n## Deep\n\nMore alpha detail.\n",
+      "b.md": "# Beta\n\nbitcoin mining halving rewards network.\n",
+    };
+    const first = await indexerFactory(files);
+    await first.indexer.build();
+    const second = await indexerFactory(files);
+    await second.indexer.build();
+
+    expect(communityRows(first.settings.dbPath)).toEqual(communityRows(second.settings.dbPath));
+    expect(communityAssignments(first.settings.dbPath)).toEqual(
+      communityAssignments(second.settings.dbPath),
+    );
+    // And every section is assigned in both.
+    expect(count(first.settings.dbPath, "COMMUNITY_SECTIONS")).toBe(
+      count(first.settings.dbPath, "SECTIONS"),
+    );
+    expect(count(second.settings.dbPath, "COMMUNITY_SECTIONS")).toBe(
+      count(second.settings.dbPath, "SECTIONS"),
+    );
+  });
+
+  it("one-file edit keeps the untouched file's sections in the same communities", async () => {
+    const files = {
+      // Distinct topics with NO shared grams between files: an edit to a.md
+      // cannot pull b.md's sections across the cluster threshold.
+      "a.md": "# Alpha\n\nbloom energy fuel cells overview.\n\n## Deep\n\nNotes on the section structure.\n",
+      "b.md": "# Beta\n\nbitcoin mining halving rewards network.\n",
+    };
+    const { indexer, settings, vaultDir } = await indexerFactory(files);
+    await indexer.build();
+    const before = new Map(communityAssignments(settings.dbPath));
+
+    // One-file change: edit a.md only; b.md is untouched.
+    fs.writeFileSync(
+      path.join(vaultDir, "a.md"),
+      "# Alpha\n\nbloom energy fuel cells overview, revised with fresh detail.\n\n## Deep\n\nNotes on the section structure.\n",
+    );
+    const rebuilt = new Indexer(settings, new FakeEmbedder(64));
+    await rebuilt.build();
+    const after = new Map(communityAssignments(settings.dbPath));
+
+    // The untouched file's sections keep their community ids across the edit.
+    expect(after.get("b.md::Beta")).toBe(before.get("b.md::Beta"));
   });
 
   it("no headings file gets root section", async () => {

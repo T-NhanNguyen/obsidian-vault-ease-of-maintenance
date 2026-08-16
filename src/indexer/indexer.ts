@@ -9,7 +9,7 @@ import { parseIgnorePatterns } from "../agent/engine";
 import { Chunker, SectionInfo } from "./chunker";
 import { DatabaseManager, FileWriteInput, SearchResult, SectionWriteInput } from "./db";
 import { hybridQuery, HybridQueryOptions } from "./graph_search";
-import { assignCommunities, computeSeedEmbeddings } from "./communities";
+import { assignCommunities, computeSeedEmbeddings, ensureAutoCommunities } from "./communities";
 import { Embedder, IEmbedder } from "./embedder";
 import { GraphBuilder } from "./graph";
 import { ManifestParser } from "./manifest";
@@ -83,8 +83,14 @@ export class Indexer {
       // Compute edges
       await this.graph.computeAllEdges(allSections, filePaths);
 
-      // Assign sections to communities
-      await assignCommunities(this.db, allSections, seeds, seedEmbeddings);
+      // Assign sections to communities — seeded vaults keep the cosine
+      // assignment; unseeded vaults get auto-clustered communities so every
+      // vault has communities (Phase 3 of the GraphRAG buildout).
+      if (seeds.length > 0) {
+        await assignCommunities(this.db, allSections, seeds, seedEmbeddings);
+      } else {
+        await ensureAutoCommunities(this.db, allSections);
+      }
 
       // Insert metadata
       await this.db.insertMeta(`vault:${files.length}files`, manifestHash);
@@ -118,7 +124,7 @@ export class Indexer {
       const oldManifestHash = meta ? (meta.manifest_hash || "") : "";
       const manifestChanged = oldManifestHash !== manifestHash;
 
-      if (manifestChanged) {
+      if (manifestChanged && seeds.length > 0) {
         await this.db.clearCommunityAssignments();
         for (const seed of seeds) {
           await this.db.insertCommunity({
