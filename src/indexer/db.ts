@@ -10,8 +10,9 @@
 //
 // Lifecycle (per execution):
 //   1. open: read settings.dbPath via the host IO → transfer to the worker.
-//      A legacy file (WAL sidecar, unparseable, or user_version < 2) is
-//      retired to .note-maintainer/legacy/ and a fresh index is started —
+//      A legacy file (WAL sidecar, unparseable, or user_version <
+//      DB_ENGINE_VERSION) is retired to .note-maintainer/legacy/ and a fresh
+//      index is started —
 //      the index is derived data, so a one-time rebuild is deterministic.
 //   2. ops: every method below awaits a typed worker op.
 //   3. close: the worker exports once when dirty; the main thread writes the
@@ -144,7 +145,8 @@ export class DatabaseManager {
     }
 
     this.channel = channel;
-    // Schema safety: ensure the v2 tables + user_version marker exist.
+    // Schema safety: ensure the current-engine tables + user_version marker
+    // exist.
     await channel.call("initialize");
     return channel;
   }

@@ -53,7 +53,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Schema version marker. Bump + migrate on any schema-affecting change. */
-export const DB_ENGINE_VERSION = 2;
+export const DB_ENGINE_VERSION = 3;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS FILES (
@@ -125,6 +125,18 @@ CREATE TABLE IF NOT EXISTS COMMUNITY_SECTIONS (
     community_id TEXT NOT NULL,
     PRIMARY KEY (section_key, community_id),
     FOREIGN KEY (section_key) REFERENCES SECTIONS(node_key),
+    FOREIGN KEY (community_id) REFERENCES COMMUNITIES(community_id)
+);
+
+-- Community reports are DERIVED data (Phase 4+): an LLM-written markdown
+-- summary per community, stored separately from assignment so it can be
+-- regenerated without touching COMMUNITY_SECTIONS.
+CREATE TABLE IF NOT EXISTS COMMUNITY_REPORTS (
+    community_id    TEXT PRIMARY KEY,
+    report          TEXT,
+    model           TEXT,
+    tokens          INTEGER,
+    built_at        TEXT,
     FOREIGN KEY (community_id) REFERENCES COMMUNITIES(community_id)
 );
 `;
@@ -214,7 +226,7 @@ export class SqlJsDatabase {
    * Open a database from raw bytes (or start empty). Returns null when the
    * bytes are NOT a sql.js-compatible current-engine database — either the
    * file does not parse, or PRAGMA user_version is below DB_ENGINE_VERSION
-   * (a legacy better-sqlite3 index). The caller then retires the file to
+   * (a legacy index from an older engine). The caller then retires the file to
    * legacy/ and rebuilds — see the facade's upgrade flow.
    */
   static create(sql: SqlJsStatic, dbBytes: Uint8Array | null): SqlJsDatabase | null {
@@ -292,7 +304,7 @@ export class SqlJsDatabase {
       }
     }
 
-    // Create v2 schema
+    // Create the current-engine schema
     this.conn.exec(SCHEMA_SQL);
     if (this.ensureMigratedColumns()) changed = true;
 
@@ -324,8 +336,9 @@ export class SqlJsDatabase {
 
   clearAll(): void {
     const tables = [
-      "COMMUNITY_SECTIONS", "SECTION_ENTITIES", "SECTIONS", "EDGES",
-      "ENTITIES", "COMMUNITIES", "FILES", "INDEX_META",
+      // Reports reference COMMUNITIES, so they must go before it.
+      "COMMUNITY_REPORTS", "COMMUNITY_SECTIONS", "SECTION_ENTITIES",
+      "SECTIONS", "EDGES", "ENTITIES", "COMMUNITIES", "FILES", "INDEX_META",
     ];
     for (const table of tables) {
       this.conn.run(`DELETE FROM ${table}`);

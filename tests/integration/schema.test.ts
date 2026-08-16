@@ -3,10 +3,11 @@
 //
 // Two layers are pinned:
 //   1. The sync engine (SqlJsDatabase) — schema, columns, meta, v1-table
-//      retirement, mid-v2 column repair, user_version marker.
+//      retirement, current-engine column repair, user_version marker.
 //   2. The facade upgrade path (DatabaseManager) — a legacy file (WAL
-//      sidecar, unparseable, or user_version < 2) is retired to legacy/ and
-//      a fresh v2 index is created; searches and writes then work normally.
+//      sidecar, unparseable, or user_version < DB_ENGINE_VERSION) is retired
+//      to legacy/ and a fresh current-engine index is created; searches and
+//      writes then work normally.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "fs";
@@ -68,9 +69,12 @@ function writeLegacyFile(tmpDir: string, filename: string, create: (conn: Databa
   return dbPath;
 }
 
-const V2_TABLES = new Set([
+// The current-engine table set — a fresh initialize() must create all of
+// these (v3 adds COMMUNITY_REPORTS on top of the v2 schema).
+const SCHEMA_TABLES = new Set([
   "FILES", "SECTIONS", "ENTITIES", "SECTION_ENTITIES",
-  "EDGES", "COMMUNITIES", "INDEX_META",
+  "EDGES", "COMMUNITIES", "INDEX_META", "COMMUNITY_SECTIONS",
+  "COMMUNITY_REPORTS",
 ]);
 
 function tmpDir(): string {
@@ -86,7 +90,7 @@ describe("Schema", () => {
     await db.close();
 
     const tables = tableNames(dbPath);
-    for (const t of V2_TABLES) {
+    for (const t of SCHEMA_TABLES) {
       expect(tables.has(t)).toBe(true);
     }
   });
@@ -131,6 +135,21 @@ describe("Schema", () => {
     expect(cols.has("manifest_hash")).toBe(true);
   });
 
+  it("community reports columns", async () => {
+    const dir = tmpDir();
+    const dbPath = path.join(dir, "index.db");
+    const db = new DatabaseManager(dbPath);
+    await db.initialize();
+    await db.close();
+
+    const cols = columns(dbPath, "COMMUNITY_REPORTS");
+    expect(cols.has("community_id")).toBe(true);
+    expect(cols.has("report")).toBe(true);
+    expect(cols.has("model")).toBe(true);
+    expect(cols.has("tokens")).toBe(true);
+    expect(cols.has("built_at")).toBe(true);
+  });
+
   it("writes the engine version marker", async () => {
     const dir = tmpDir();
     const dbPath = path.join(dir, "index.db");
@@ -159,7 +178,7 @@ describe("Meta", () => {
 });
 
 describe("SqlJsDatabase (sync engine)", () => {
-  it("drops v1 chunks tables and creates the v2 schema in place", async () => {
+  it("drops v1 chunks tables and creates the current-engine schema in place", async () => {
     const dir = tmpDir();
     const dbPath = writeLegacyFile(dir, "v1.db", (conn) => {
       conn.run("CREATE TABLE CHUNKS (id INTEGER PRIMARY KEY)");
@@ -180,17 +199,17 @@ describe("SqlJsDatabase (sync engine)", () => {
     const tables = tableNames(dbPath);
     expect(tables.has("CHUNKS")).toBe(false);
     expect(tables.has("CHUNK_ENTITIES")).toBe(false);
-    for (const t of V2_TABLES) {
+    for (const t of SCHEMA_TABLES) {
       expect(tables.has(t)).toBe(true);
     }
   });
 
-  it("repairs mid-v2 column drift", async () => {
+  it("repairs current-engine column drift", async () => {
     const dir = tmpDir();
     const dbPath = writeLegacyFile(dir, "drift.db", (conn) => {
       conn.run("CREATE TABLE FILES (file_id TEXT PRIMARY KEY, path TEXT, title TEXT)");
       conn.run("CREATE TABLE INDEX_META (id INTEGER)");
-      conn.run("PRAGMA user_version = 2");
+      conn.run(`PRAGMA user_version = ${DB_ENGINE_VERSION}`);
     });
 
     const engine = SqlJsDatabase.create(SQL, fs.readFileSync(dbPath));
@@ -205,10 +224,23 @@ describe("SqlJsDatabase (sync engine)", () => {
     expect(cols.has("content_type")).toBe(true);
     expect(cols.has("rollup_summary")).toBe(true);
   });
+
+  it("detects a v2 index (user_version 2) as legacy after the v3 bump", async () => {
+    const dir = tmpDir();
+    const dbPath = writeLegacyFile(dir, "v2.db", (conn) => {
+      conn.run("CREATE TABLE FILES (file_id TEXT PRIMARY KEY, path TEXT)");
+      conn.run("PRAGMA user_version = 2");
+    });
+
+    // v2 < DB_ENGINE_VERSION (3) → create() reports needsRebuild; the
+    // facade then retires the file and rebuilds a fresh v3 index.
+    const engine = SqlJsDatabase.create(SQL, fs.readFileSync(dbPath));
+    expect(engine).toBeNull();
+  });
 });
 
 describe("Legacy index upgrade (facade)", () => {
-  it("retires a v1 file to legacy/ and creates a fresh v2 index", async () => {
+  it("retires a v1 file to legacy/ and creates a fresh current-engine index", async () => {
     const dir = tmpDir();
     const dbPath = writeLegacyFile(dir, "index.db", (conn) => {
       conn.run("CREATE TABLE CHUNKS (id INTEGER PRIMARY KEY)");
@@ -223,13 +255,13 @@ describe("Legacy index upgrade (facade)", () => {
     const legacyDir = path.join(dir, "legacy");
     expect(fs.existsSync(path.join(legacyDir, "index.db"))).toBe(true);
     expect(fs.existsSync(dbPath)).toBe(true);
-    for (const t of V2_TABLES) {
+    for (const t of SCHEMA_TABLES) {
       expect(tableNames(dbPath).has(t)).toBe(true);
     }
     expect(tableNames(dbPath).has("CHUNKS")).toBe(false);
   });
 
-  it("retires a legacy v2 file with user_version 0", async () => {
+  it("retires a legacy file with user_version 0", async () => {
     const dir = tmpDir();
     const dbPath = writeLegacyFile(dir, "index.db", (conn) => {
       conn.run("CREATE TABLE FILES (file_id TEXT PRIMARY KEY, path TEXT, title TEXT)");
@@ -241,6 +273,25 @@ describe("Legacy index upgrade (facade)", () => {
 
     expect(fs.existsSync(path.join(dir, "legacy", "index.db"))).toBe(true);
     expect(userVersion(dbPath)).toBe(DB_ENGINE_VERSION);
+  });
+
+  it("retires a v2 index and rebuilds a fresh v3 schema", async () => {
+    const dir = tmpDir();
+    // A real 1.3.1-era index: v2 tables + the user_version 2 marker. With
+    // the v3 bump this is now legacy — retire + rebuild (never migrate).
+    const dbPath = writeLegacyFile(dir, "index.db", (conn) => {
+      conn.run("CREATE TABLE FILES (file_id TEXT PRIMARY KEY, path TEXT, title TEXT)");
+      conn.run("CREATE TABLE COMMUNITIES (community_id TEXT PRIMARY KEY)");
+      conn.run("PRAGMA user_version = 2");
+    });
+
+    const db = new DatabaseManager(dbPath);
+    await db.initialize();
+    await db.close();
+
+    expect(fs.existsSync(path.join(dir, "legacy", "index.db"))).toBe(true);
+    expect(userVersion(dbPath)).toBe(DB_ENGINE_VERSION);
+    expect(tableNames(dbPath).has("COMMUNITY_REPORTS")).toBe(true);
   });
 
   it("retires the index when a -wal sidecar exists next to it", async () => {

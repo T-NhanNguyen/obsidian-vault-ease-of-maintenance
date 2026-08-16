@@ -126,9 +126,40 @@ function readUserVersion(bytes: Uint8Array): number {
   }
 }
 
+function tableNames(bytes: Uint8Array): Set<string> {
+  const conn = new SQL.Database(bytes);
+  try {
+    const rows = conn.exec("SELECT name FROM sqlite_master WHERE type='table'")[0]?.values ?? [];
+    return new Set(rows.map((r) => String(r[0])));
+  } finally {
+    conn.close();
+  }
+}
+
 const V1_INDEX = (conn: Database): void => {
   conn.run("CREATE TABLE CHUNKS (id INTEGER PRIMARY KEY)");
   conn.run("CREATE TABLE FILES (path TEXT PRIMARY KEY)");
+};
+
+// A real 1.3.1-era (pre-v3) index: the full v2 table set + user_version 2.
+const V2_INDEX = (conn: Database): void => {
+  conn.run("CREATE TABLE FILES (file_id TEXT PRIMARY KEY, path TEXT, title TEXT)");
+  conn.run("CREATE TABLE SECTIONS (node_key TEXT PRIMARY KEY, file_id TEXT)");
+  conn.run("CREATE TABLE ENTITIES (entity_id TEXT PRIMARY KEY, name TEXT)");
+  conn.run(
+    "CREATE TABLE SECTION_ENTITIES (section_key TEXT, entity_id TEXT, PRIMARY KEY (section_key, entity_id))",
+  );
+  conn.run(
+    "CREATE TABLE EDGES (src_key TEXT, dst_key TEXT, kind TEXT, weight REAL, PRIMARY KEY (src_key, dst_key, kind))",
+  );
+  conn.run("CREATE TABLE COMMUNITIES (community_id TEXT PRIMARY KEY, seed_source TEXT, label TEXT)");
+  conn.run(
+    "CREATE TABLE COMMUNITY_SECTIONS (section_key TEXT, community_id TEXT, PRIMARY KEY (section_key, community_id))",
+  );
+  conn.run(
+    "CREATE TABLE INDEX_META (snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT, built_at TEXT, vault_version TEXT, manifest_hash TEXT)",
+  );
+  conn.run("PRAGMA user_version = 2");
 };
 
 // ---------------------------------------------------------------------------
@@ -194,6 +225,31 @@ describe("Legacy index upgrade (Obsidian full-path shape)", () => {
     expect(io.files.has(path.join(dir, "legacy", "index.db"))).toBe(true);
     expect(io.files.has(dbPath)).toBe(true); // fresh index written back
     expect(readUserVersion(io.files.get(dbPath)!)).toBe(DB_ENGINE_VERSION);
+  });
+
+  it("rebuilds a v2 index (pre-v3) into the fresh v3 schema", async () => {
+    const dir = "/vault/.note-maintainer";
+    const dbPath = path.join(dir, "index.db");
+    const io = new MemIO();
+    io.shape = "full";
+    io.files.set(dbPath, legacyIndexBytes(V2_INDEX));
+
+    let hookCalls = 0;
+    const db = new DatabaseManager(dbPath, inMemoryHost(io, () => { hookCalls++; }));
+    await db.initialize();
+    // The fresh v3 index must be fully usable: writes + reads round-trip
+    // through the in-process worker channel.
+    await db.insertCommunity({ communityId: "c1", seedSource: "test", label: "L" });
+    const communities = await db.getAllCommunities();
+    await db.close();
+
+    expect(hookCalls).toBe(1); // one upgrade event — v2 → v3 rebuild
+    expect(db.didUpgrade).toBe(true);
+    expect(io.files.has(path.join(dir, "legacy", "index.db"))).toBe(true);
+    const fresh = io.files.get(dbPath)!;
+    expect(readUserVersion(fresh)).toBe(DB_ENGINE_VERSION);
+    expect(tableNames(fresh).has("COMMUNITY_REPORTS")).toBe(true);
+    expect(communities.map((c) => c.community_id)).toEqual(["c1"]);
   });
 
   it("retires the index AND its WAL sidecar in one upgrade", async () => {
