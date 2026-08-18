@@ -109,8 +109,7 @@ Obsidian notifies you).
 | Build graphrag index | Full index rebuild from scratch. |
 | Clean current note | Run the cleanup agent on the open note. |
 | Sort inbox | Run the triage agent on the inbox. |
-| Chat with your vault | Ask a question about the vault. |
-| Clarify | Ask about vault folders the manifest does not cover, propose the manifest edit, and write it after you confirm. The isolation-test surface for the portable clarification dialog (`src/agent/clarify.ts`); sort and build-index will drive the same module. |
+| Chat with your vault | Ask a question about the vault. The chat agent can ask clarifying questions inline (the `clarify` tool) and, for manifest-review requests, propose a manifest update with a diff you accept or reject. |
 
 ## Plugin Settings
 
@@ -197,12 +196,12 @@ The chat agent auto-detects at startup whether the configured model can emit too
 | `src/indexer/indexer.ts` | Orchestrates the indexing pipeline. |
 | `src/agent/engine.ts` | Deterministic primitives: file registry, validators, journal, receipts. |
 | `src/agent/conversation.ts` | Shared conversation store (chat + clarify namespaces, bounded history). |
-| `src/agent/clarify.ts` | Portable clarification dialog: read manifest, detect uncovered folders, ask, propose ops, diff, guarded write. |
-| `src/clarify-review.ts` | Clarify review renderer (question UI + manifest diff with accept/reject). |
+| `src/agent/clarify.ts` | Portable clarification harness: read manifest, detect uncovered folders, ask (injectable question source), propose ops, diff, guarded write. |
+| `src/agent/tools.ts` | Agent tools, including `apply_edits`, the `clarify` tool, and the `withClarify` compose helper. |
+| `src/chat-review.ts` | Chat renderer — message list, in-flight answer mode for `clarify` calls, and the manifest diff accept/reject card. |
 | `src/io/vault_io.ts` | Vault-confined sync file layer — the only place `fs` appears. |
 | `src/agent/llm_client.ts` | API transport for local, OpenAI, and OpenRouter providers. |
 | `src/agent/llm.ts` | Chat loop with tool calling. |
-| `src/agent/tools.ts` | Agent tools, including `apply_edits`. |
 | `src/agent/runtime.ts` | Orchestrators: build, clean, sort, chat. |
 | `src/preview/pending.ts` | Stores pending review state. |
 | `tests/` | Vitest suite. |

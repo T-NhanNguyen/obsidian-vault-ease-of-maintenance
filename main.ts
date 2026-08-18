@@ -12,7 +12,7 @@ import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME } from "./sr
 import { parseConfigYaml, mergeConfigLayers } from "./src/config-yaml";
 import { errorMessage } from "./src/errors";
 import { detectToolCallSupport, probeConnection } from "./src/agent/capability";
-import { closeChatSession, closeClarifySession, appendClarifyTurn } from "./src/agent/chat_session";
+import { closeChatSession, closeClarifySession } from "./src/agent/chat_session";
 import {
   runCleanup,
   runTriage,
@@ -22,9 +22,6 @@ import {
 } from "./src/agent/runtime";
 import { VaultIO } from "./src/io/vault_io";
 import { setDefaultDbHost, createObsidianDbHost } from "./src/indexer/db_host";
-import { runClarifyDialog, scanVaultFolders, writeClarifyProposal } from "./src/agent/clarify";
-import { parseIgnorePatterns } from "./src/agent/engine";
-import { TocReader } from "./src/indexer/manifest";
 import { resetRegistry } from "./src/agent/tools";
 import { openReviewInModal } from "./src/container-modal";
 import {
@@ -32,7 +29,7 @@ import {
   REVIEW_VIEW_TYPE,
   ReviewView,
 } from "./src/container-sidebar";
-import type { ReviewSpec, SortResultPayload, ClarifyReviewSpec } from "./src/types";
+import type { ReviewSpec, SortResultPayload } from "./src/types";
 
 // ---------------------------------------------------------------------------
 // Plugin Settings
@@ -569,16 +566,9 @@ export default class VaultMaintenancePlugin extends Plugin {
       callback: () => this.handleSort(),
     });
 
-    // Isolation-test surface for the portable clarification dialog (handoff
-    // Part A): asks about vault folders the manifest does not cover, proposes
-    // the manifest edit, and writes only after the user confirms. Sort and
-    // build-index will drive the same module later.
-    this.addCommand({
-      id: "clarify",
-      name: "Clarify",
-      callback: () => this.handleClarify(),
-    });
-
+    // The clarify dialog runs in the chat tab — the single entry point (the
+    // chat agent loop exposes the clarify tool; the deterministic no-tool-call
+    // path runs the same dialog on the same surface). No standalone command.
     this.addCommand({
       id: "chat-query",
       name: "Chat with your vault",
@@ -794,63 +784,6 @@ export default class VaultMaintenancePlugin extends Plugin {
     const spec: ReviewSpec = {
       kind: "chat",
       query: runChatQuery,
-    };
-    this.openReview(spec);
-  }
-
-  // The isolated "Clarify" command — runs the portable dialog module end to
-  // end without touching sort/build: scan the vault, read the manifest from
-  // disk, ask about uncovered folders one at a time, show the diff, and
-  // write the manifest only after the user accepts (the same applyOps
-  // channel clean-up's apply_edits tool uses).
-  async handleClarify(): Promise<void> {
-    const vaultPath = settings.vaultPath;
-    if (!vaultPath) {
-      new Notice("Vault path not available.");
-      return;
-    }
-
-    const spec: ClarifyReviewSpec = {
-      kind: "clarify",
-      id: `clarify-${++reviewSeq}`,
-      start: async (channel) => {
-        const folders = scanVaultFolders(vaultPath, parseIgnorePatterns(settings.ignorePatterns));
-        const manifestPath = new TocReader(vaultPath).findManifest();
-        const proposal = await runClarifyDialog({
-          vaultPath,
-          manifestPath,
-          folders,
-          ask: async (question) => {
-            const answer = await channel.ask(question);
-            // The clarify conversation store keeps question/answer turns
-            // only (bounded history) — never candidate context or scores.
-            appendClarifyTurn(vaultPath, "assistant", question.prompt);
-            if (answer) appendClarifyTurn(vaultPath, "user", answer);
-            return answer;
-          },
-        });
-
-        if (!proposal) {
-          channel.notify(
-            "Nothing to clarify — every vault folder is already covered by the manifest, " +
-            "or no answers were given.",
-          );
-          return;
-        }
-
-        const decision = await channel.showProposal(proposal);
-        if (decision === "accept") {
-          const rel = proposal.manifestPath ?? settings.manifest.filename;
-          try {
-            writeClarifyProposal(vaultPath, rel, proposal);
-            channel.notify(`Manifest updated: ${rel}`);
-          } catch (e) {
-            channel.notify(`Write failed: ${errorMessage(e)}`);
-          }
-        } else {
-          channel.notify("Rejected — manifest not modified.");
-        }
-      },
     };
     this.openReview(spec);
   }

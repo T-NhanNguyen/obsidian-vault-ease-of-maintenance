@@ -285,6 +285,32 @@ describe("runClarifyDialog", () => {
 
     expect(proposal!.after).toContain("## X/ <!-- reference material notes -->");
   });
+
+  it("injects a question source — custom questions reach the asker, null skips the folder", async () => {
+    const vault = makeVault({ "10_Stocks": ["IREN.md"], "20_AI": ["idea.md"] });
+    const manifestPath = writeManifest(vault, GENERATED_H1 + "\n");
+    const asked: string[] = [];
+    const proposal = await runClarifyDialog({
+      vaultPath: vault,
+      manifestPath,
+      folders: scanVaultFolders(vault, []),
+      questionSource: (folder) =>
+        folder.path === "20_AI"
+          ? null // skip — the source has nothing to ask for this folder
+          : { folderPath: folder.path, prompt: `CUSTOM: ${folder.path}?` },
+      ask: async (q) => {
+        asked.push(q.prompt);
+        return "custom purpose";
+      },
+    });
+
+    // 10_Stocks is asked with the injected question; 20_AI is left
+    // unanswered (the source returned null for it).
+    expect(asked).toEqual(["CUSTOM: 10_Stocks?"]);
+    expect(proposal!.answered.map(a => a.question.folderPath)).toEqual(["10_Stocks"]);
+    expect(proposal!.unanswered).toEqual(["20_AI"]);
+    expect(proposal!.after).toContain("## 10_Stocks/ <!-- custom purpose -->");
+  });
 });
 
 // ---------------------------------------------------------------------------

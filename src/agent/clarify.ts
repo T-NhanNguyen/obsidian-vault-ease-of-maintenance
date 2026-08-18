@@ -53,6 +53,13 @@ export interface ClarifyAnswer {
  * (deadline hit / dialog aborted). */
 export type AskQuestion = (question: ClarifyQuestion) => Promise<string | null>;
 
+/** Builds the question to ask for an uncovered folder. Return null to skip
+ * the folder (left unanswered). The deterministic default is
+ * buildFolderQuestion; consumers (chat, future harness users) inject their
+ * own source — e.g. questions derived by a reasoning model from the
+ * evidence the task produced. */
+export type QuestionSource = (folder: VaultFolderInfo) => ClarifyQuestion | null;
+
 export interface ClarifyDialogInput {
   vaultPath: string;
   /** Vault-relative manifest path, or null when no manifest exists yet. */
@@ -60,6 +67,9 @@ export interface ClarifyDialogInput {
   /** The vault folder scan (hidden + ignored folders already excluded). */
   folders: VaultFolderInfo[];
   ask: AskQuestion;
+  /** Question source for the uncovered folders — defaults to the
+   * deterministic buildFolderQuestion (the no-tool-call path). */
+  questionSource?: QuestionSource;
   /** Epoch ms. The dialog stops asking once passed (optional — interactive
    * callers leave it unset and rely on the ask channel's null answer). */
   deadlineMs?: number;
@@ -79,6 +89,21 @@ export interface ClarifyProposal {
   unanswered: string[];
   /** Unified-diff text (before → after) for the review surface. */
   diff: string;
+}
+
+/** One recorded clarification exchange — the free-form question text and the
+ * user's answer (the shape the conversation store keeps per turn). */
+export interface ClarifyTurnRecord {
+  question: string;
+  answer: string;
+}
+
+/** The manifest state a dialog run starts from: the discovered manifest, its
+ * on-disk content, and the folders it does not cover. */
+export interface ManifestContext {
+  manifestPath: string | null;
+  before: string;
+  uncovered: VaultFolderInfo[];
 }
 
 /** The full review-surface contract the clarify command uses: ask questions,
@@ -154,6 +179,22 @@ export function computeUncoveredFolders(
   return folders.filter(folder => !covered.has(folder.path));
 }
 
+/** Discovers the manifest on disk (TocReader's recursive search) and reads
+ * its content + uncovered folders — the state a dialog run starts from.
+ * Callers that already know the manifest path read it directly instead. */
+export function computeManifestContext(
+  vaultPath: string,
+  folders: VaultFolderInfo[],
+): ManifestContext {
+  const manifestPath = new TocReader(vaultPath).findManifest();
+  const io = new VaultIO(vaultPath);
+  const before = manifestPath && io.exists(manifestPath)
+    ? io.readText(manifestPath)
+    : "";
+  const entries = new TocReader(vaultPath)._parseContent(before);
+  return { manifestPath, before, uncovered: computeUncoveredFolders(entries, folders) };
+}
+
 // ---------------------------------------------------------------------------
 // Question building — one self-contained question per folder
 // ---------------------------------------------------------------------------
@@ -214,7 +255,11 @@ export async function runClarifyDialog(input: ClarifyDialogInput): Promise<Clari
       unanswered.push(folder.path);
       continue;
     }
-    const question = buildFolderQuestion(folder);
+    const question = (input.questionSource ?? buildFolderQuestion)(folder);
+    if (!question) {
+      unanswered.push(folder.path);
+      continue;
+    }
     const answer = await input.ask(question);
     if (answer == null) {
       deadlineHit = true;
@@ -229,18 +274,28 @@ export async function runClarifyDialog(input: ClarifyDialogInput): Promise<Clari
     }
   }
 
+  return proposeManifestEdit(input.manifestPath, before, answered, unanswered);
+}
+
+/** The propose phase shared by the ask-driven dialog and the replay path
+ * (buildProposalFromTurns): build the apply_edits ops, apply them, render
+ * the diff, and normalize the trailing newline (POSIX convention, the same
+ * generateManifest uses — no 1-byte churn on regeneration). */
+function proposeManifestEdit(
+  manifestPath: string | null,
+  before: string,
+  answered: ClarifyAnswer[],
+  unanswered: string[],
+): ClarifyProposal | null {
   if (answered.length === 0) return null;
 
   const ops = buildManifestOps(before, answered);
   const applied = applyOps(ops, before ? before.split("\n") : []);
-  // The manifest is a POSIX text file: normalize the proposal to end with
-  // exactly one newline (the same convention generateManifest uses), so a
-  // later regeneration or edit does not churn a 1-byte diff.
   const joined = applied.lines.join("\n");
   const after = joined === "" ? "" : joined.endsWith("\n") ? joined : `${joined}\n`;
 
   return {
-    manifestPath: input.manifestPath,
+    manifestPath,
     before,
     after,
     ops,
@@ -248,6 +303,62 @@ export async function runClarifyDialog(input: ClarifyDialogInput): Promise<Clari
     unanswered,
     diff: lineDiff(before, after),
   };
+}
+
+/** Reconciles free-form Q&A turns (the model's clarify calls recorded in the
+ * conversation store) back into a manifest proposal WITHOUT re-asking: each
+ * turn is matched to the uncovered folder its question mentions (longest
+ * path contained in the text, then unambiguous basename), sanitized, and
+ * proposed through the same ops → diff pipeline as the ask-driven dialog.
+ * Unmatched turns stay out of the proposal (they are conversation memory
+ * only). Returns null when no turn matched an uncovered folder. */
+export function buildProposalFromTurns(input: {
+  vaultPath: string;
+  folders: VaultFolderInfo[];
+  turns: ClarifyTurnRecord[];
+}): ClarifyProposal | null {
+  const context = computeManifestContext(input.vaultPath, input.folders);
+  const matched = new Map<string, ClarifyTurnRecord>(); // folderPath → turn
+  for (const turn of input.turns) {
+    const folderPath = matchFolderInQuestion(turn.question, context.uncovered);
+    if (folderPath && !matched.has(folderPath)) matched.set(folderPath, turn);
+  }
+  if (matched.size === 0) return null;
+
+  const answered: ClarifyAnswer[] = [];
+  for (const [folderPath, turn] of matched) {
+    const purpose = sanitizePurpose(turn.answer);
+    if (purpose) {
+      answered.push({ question: { folderPath, prompt: turn.question }, answer: purpose });
+    }
+  }
+  const unanswered = context.uncovered
+    .filter(folder => !matched.has(folder.path))
+    .map(folder => folder.path);
+  return proposeManifestEdit(context.manifestPath, context.before, answered, unanswered);
+}
+
+/** The folder an (unstructured) question mentions: the longest uncovered
+ * path contained verbatim in the question, else the folder whose basename
+ * appears and is unambiguous among the uncovered set. */
+function matchFolderInQuestion(question: string, uncovered: VaultFolderInfo[]): string | null {
+  const candidates = [...uncovered].sort((a, b) => b.path.length - a.path.length);
+  for (const folder of candidates) {
+    if (question.includes(folder.path)) return folder.path;
+  }
+  const basenamePaths = new Map<string, string[]>();
+  for (const folder of candidates) {
+    const basename = folder.path.split("/").pop()!;
+    if (!basenamePaths.has(basename)) basenamePaths.set(basename, []);
+    basenamePaths.get(basename)!.push(folder.path);
+  }
+  for (const folder of candidates) {
+    const basename = folder.path.split("/").pop()!;
+    if (basenamePaths.get(basename)!.length === 1 && question.includes(basename)) {
+      return folder.path;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

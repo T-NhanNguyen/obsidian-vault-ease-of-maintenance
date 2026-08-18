@@ -1,21 +1,34 @@
 // Chat renderer — a minimal RAG chat UI wired to an in-memory query
 // function (Path C: no server POST). Container-agnostic: renders the
-// message list + input into any host.
+// message list + input into any host. Hosts the clarify harness: a
+// `clarify` tool call mid-run renders the question as an assistant message,
+// re-enables the input in answer mode, and the submitted answer resolves
+// the tool call (the interactive pattern sort's run-in-review reuses).
 
 import { MarkdownView, Notice } from "obsidian";
 import type { ReviewHost } from "./review-host";
 import type { ChatQueryResponse, ChatQueryResult } from "./types";
 import type { App } from "obsidian";
+import { settings } from "./config";
+import type { ClarifyArgs, ClarifyAnswerProvider } from "./agent/tools";
+import { writeClarifyProposal } from "./agent/clarify";
+import type { ClarifyProposal } from "./agent/clarify";
 
 const CHAT_TITLE = "Chat";
 const INPUT_PLACEHOLDER = "Ask about your vault…";
+const ANSWER_PLACEHOLDER = "Answer the question above… (Esc to skip)";
 const SEND_BUTTON_LABEL = "Ask";
 const LOADING_LABEL = "Thinking…";
+const WAITING_FOR_ANSWER_LABEL = "Waiting for your answer…";
 const QUERY_FAILED_PREFIX = "Query failed: ";
+const PROPOSAL_HEADING = "Manifest diff";
+const NEW_MANIFEST_LABEL = "(new manifest)";
+const ACCEPT_BUTTON_LABEL = "Accept — write manifest";
+const REJECT_BUTTON_LABEL = "Reject";
 
 export function renderChatReview(
     host: ReviewHost,
-    query: (question: string) => Promise<ChatQueryResponse>
+    query: (question: string, ask?: ClarifyAnswerProvider) => Promise<ChatQueryResponse>
 ): void {
     const container = host.contentEl;
     container.empty();
@@ -34,18 +47,56 @@ export function renderChatReview(
         cls: "nm-btn nm-btn-primary",
     });
 
-    sendBtn.addEventListener("click", submit);
-    input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") submit();
-    });
-    input.focus();
+    // The pending clarify question — while set, submit answers it instead of
+    // starting a new query; Escape declines (null → NO_ANSWER marker).
+    let pendingResolve: ((value: string | null) => void) | null = null;
 
     function submit() {
+        if (pendingResolve) {
+            const answer = input.value.trim();
+            if (!answer) return; // empty input stays in answer mode
+            input.value = "";
+            void appendMessage(messages, "user", answer, host);
+            pendingResolve(answer);
+            return;
+        }
         const question = input.value.trim();
         if (!question) return;
         input.value = "";
-        void runQuery(question, messages, sendBtn, input, query, host);
+        void runQuery(question, messages, sendBtn, input, query, host, askProvider);
     }
+
+    sendBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            submit();
+        } else if (event.key === "Escape" && pendingResolve) {
+            pendingResolve(null);
+        }
+    });
+    input.focus();
+
+    // The clarify answer provider — the mid-run input-request contract: the
+    // question renders as an assistant message and the input re-enables in
+    // answer mode; the submitted answer resolves the pending tool call.
+    const askProvider: ClarifyAnswerProvider = (args: ClarifyArgs) =>
+        new Promise<string | null>((resolve) => {
+            void appendQuestionMessage(messages, args, host).then(() => {
+                const loadingEl = messages.querySelector<HTMLElement>(".nm-msg-loading");
+                if (loadingEl) loadingEl.setText(WAITING_FOR_ANSWER_LABEL);
+                input.placeholder = ANSWER_PLACEHOLDER;
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
+                pendingResolve = (value: string | null) => {
+                    pendingResolve = null;
+                    input.placeholder = INPUT_PLACEHOLDER;
+                    input.disabled = true;
+                    sendBtn.disabled = true;
+                    resolve(value);
+                };
+            });
+        });
 }
 
 async function runQuery(
@@ -53,8 +104,9 @@ async function runQuery(
     messages: HTMLElement,
     sendBtn: HTMLButtonElement,
     input: HTMLInputElement,
-    query: (question: string) => Promise<ChatQueryResponse>,
-    host: ReviewHost
+    query: (question: string, ask?: ClarifyAnswerProvider) => Promise<ChatQueryResponse>,
+    host: ReviewHost,
+    ask: ClarifyAnswerProvider
 ): Promise<void> {
     await appendMessage(messages, "user", question, host);
     sendBtn.disabled = true;
@@ -62,11 +114,14 @@ async function runQuery(
     const loading = messages.createDiv({ cls: "nm-msg nm-msg-assistant nm-msg-loading", text: LOADING_LABEL });
 
     try {
-        const data = await query(question);
+        const data = await query(question, ask);
         loading.remove();
         const answerEl = await appendMessage(messages, "assistant", data.answer || "", host);
         renderSources(answerEl, data.results || [], host, data.citationMap);
         wireCitationNavigation(answerEl, data.citationMap);
+        if (data.clarifyProposal) {
+            await renderProposal(messages, data.clarifyProposal, host);
+        }
     } catch (error) {
         loading.remove();
         const message = error instanceof Error ? error.message : String(error);
@@ -76,6 +131,78 @@ async function runQuery(
         input.disabled = false;
         input.focus();
     }
+}
+
+/** The model's clarify question as a chat message: prompt + rendered
+ * context (the question stays self-contained). */
+async function appendQuestionMessage(
+    messages: HTMLElement,
+    args: ClarifyArgs,
+    host: ReviewHost
+): Promise<void> {
+    const bubble = messages.createDiv({ cls: "nm-msg nm-msg-assistant" });
+    const card = bubble.createDiv({ cls: "nm-clarify-question" });
+    card.createDiv({ cls: "nm-clarify-prompt", text: args.question });
+    if (args.context) {
+        const ctx = card.createDiv({ cls: "nm-clarify-context nm-markdown" });
+        await host.renderMarkdown(args.context, ctx);
+    }
+    messages.scrollTop = messages.scrollHeight;
+}
+
+/** The manifest proposal card: diff + accept/reject. Accept performs the
+ * guarded write (the ONLY disk write in the clarify flow). */
+async function renderProposal(
+    messages: HTMLElement,
+    proposal: ClarifyProposal,
+    host: ReviewHost
+): Promise<void> {
+    const bubble = messages.createDiv({ cls: "nm-msg nm-msg-assistant" });
+    const box = bubble.createDiv({ cls: "nm-clarify-question" });
+    box.createEl("h3", { text: PROPOSAL_HEADING });
+    const meta = box.createDiv({ cls: "nm-clarify-meta" });
+    meta.createSpan({
+        cls: "nm-clarify-path",
+        text: proposal.manifestPath ?? NEW_MANIFEST_LABEL,
+    });
+    meta.createSpan({
+        cls: "nm-clarify-counts",
+        text: `${proposal.answered.length} purpose${proposal.answered.length === 1 ? "" : "s"} added` +
+            (proposal.unanswered.length ? `, ${proposal.unanswered.length} skipped` : ""),
+    });
+    box.createEl("pre", { cls: "nm-clarify-diff", text: proposal.diff });
+
+    const actions = box.createDiv({ cls: "nm-clarify-actions" });
+    const acceptBtn = actions.createEl("button", {
+        cls: "nm-btn nm-btn-primary",
+        text: ACCEPT_BUTTON_LABEL,
+    });
+    const rejectBtn = actions.createEl("button", { cls: "nm-btn", text: REJECT_BUTTON_LABEL });
+
+    const settle = (accepted: boolean): void => {
+        acceptBtn.disabled = true;
+        rejectBtn.disabled = true;
+        const rel = proposal.manifestPath ?? settings.manifest.filename;
+        if (!accepted) {
+            appendStatus(messages, "Rejected — manifest not modified.");
+            return;
+        }
+        try {
+            writeClarifyProposal(settings.vaultPath, rel, proposal);
+            appendStatus(messages, `Manifest updated: ${rel}`);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            appendStatus(messages, `Write failed: ${message}`);
+        }
+    };
+    acceptBtn.addEventListener("click", () => settle(true));
+    rejectBtn.addEventListener("click", () => settle(false));
+    messages.scrollTop = messages.scrollHeight;
+}
+
+function appendStatus(messages: HTMLElement, text: string): void {
+    messages.createDiv({ cls: "nm-msg nm-msg-assistant nm-clarify-status", text });
+    messages.scrollTop = messages.scrollHeight;
 }
 
 async function appendMessage(

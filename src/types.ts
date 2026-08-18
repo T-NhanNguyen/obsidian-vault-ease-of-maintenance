@@ -2,7 +2,8 @@
 // Path C: no server — every review spec carries its data in memory.
 // The two containers (modal + sidebar) render the same specs through ReviewCore.
 
-import type { ClarifyDialogChannel } from "./agent/clarify";
+import type { ClarifyProposal } from "./agent/clarify";
+import type { ClarifyAnswerProvider } from "./agent/tools";
 
 export interface CleanProposalPayload {
     filePath: string;
@@ -35,18 +36,16 @@ export interface SortReviewSpec {
 
 export interface ChatReviewSpec {
     readonly kind: "chat";
-    readonly query: (question: string) => Promise<ChatQueryResponse>;
+    /** The ask parameter is the chat UI's in-flight answer provider (the
+     * clarify tool's channel); it is passed per-call so the renderer owns
+     * its answer surface. */
+    readonly query: (
+        question: string,
+        ask?: ClarifyAnswerProvider,
+    ) => Promise<ChatQueryResponse>;
 }
 
-export interface ClarifyReviewSpec {
-    readonly kind: "clarify";
-    readonly id: string;
-    /** Runs the whole dialog: ask questions through the channel, show the
-     * proposal diff, and write the manifest only after the user accepts. */
-    readonly start: (channel: ClarifyDialogChannel) => Promise<void>;
-}
-
-export type ReviewSpec = CleanReviewSpec | SortReviewSpec | ChatReviewSpec | ClarifyReviewSpec;
+export type ReviewSpec = CleanReviewSpec | SortReviewSpec | ChatReviewSpec;
 
 export function specKey(spec: ReviewSpec): string {
     switch (spec.kind) {
@@ -54,8 +53,6 @@ export function specKey(spec: ReviewSpec): string {
             return `clean:${spec.id}`;
         case "sort":
             return `sort:${spec.id}`;
-        case "clarify":
-            return `clarify:${spec.id}`;
         case "chat":
             return "chat";
     }
@@ -97,4 +94,8 @@ export interface ChatQueryResponse {
     results: ChatQueryResult[];
     /** citation-number → 0‑based index into results (from the cite_source tool) */
     citationMap?: Record<number, number>;
+    /** Manifest proposal reconciled from the run's clarify Q&A (the chat
+     * manifest task) — the renderer shows the diff and the user confirms
+     * the write. Absent when the run produced no proposal. */
+    clarifyProposal?: ClarifyProposal;
 }

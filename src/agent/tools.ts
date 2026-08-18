@@ -19,6 +19,7 @@ import type { SearchResult } from "../indexer/db";
 import { buildChatContext } from "./chat_context";
 import { applyOps } from "./tools_apply_edits";
 import type { ApplyEditsArgs } from "./tools_apply_edits";
+import { Tool } from "./llm";
 // Re-export the wire shapes so importers (engine.ts, tests) keep their paths.
 export type { EditOp, OpAnchor, ApplyEditsArgs } from "./tools_apply_edits";
 import type { ChatQueryResult } from "../types";
@@ -488,6 +489,11 @@ export interface ClarifyArgs {
   deadline?: string;
 }
 
+/** The marker a declined clarify call returns — the caller falls back
+ * (manifest: the folder is left uncovered). Shared by the tool, the turn
+ * extraction, and the deadline semantics. */
+export const NO_ANSWER_MARKER_PREFIX = "NO_ANSWER:";
+
 /** Returns the answer verbatim, or null when the user did not answer. */
 export type ClarifyAnswerProvider = (
   args: ClarifyArgs,
@@ -503,17 +509,46 @@ export function resetClarifyAnswerProvider(): void {
   clarifyAnswerProvider = null;
 }
 
-export async function clarify(args: Record<string, unknown>): Promise<string> {
+/** The shared clarify implementation — resolves the answer through the given
+ * provider (or the NO_ANSWER:<deadline> marker when the provider is null /
+ * declines). withClarify() and the global clarify() entry both delegate
+ * here, so the tool contract stays in ONE place. */
+export async function clarifyWith(
+  args: Record<string, unknown>,
+  provider: ClarifyAnswerProvider | null,
+): Promise<string> {
   const { question, options, context, deadline } = args as unknown as ClarifyArgs;
   if (typeof question !== "string" || !question.trim()) {
     return "Error: question must be a non-empty string";
   }
-  if (!clarifyAnswerProvider) {
-    return `NO_ANSWER:${deadline || "unavailable"}`;
+  if (!provider) {
+    return `${NO_ANSWER_MARKER_PREFIX}${deadline || "unavailable"}`;
   }
-  const answer = await clarifyAnswerProvider({ question, options, context, deadline });
+  const answer = await provider({ question, options, context, deadline });
   if (answer == null) {
-    return `NO_ANSWER:${deadline || "unavailable"}`;
+    return `${NO_ANSWER_MARKER_PREFIX}${deadline || "unavailable"}`;
   }
   return answer;
+}
+
+export async function clarify(args: Record<string, unknown>): Promise<string> {
+  return clarifyWith(args, clarifyAnswerProvider);
+}
+
+/** Appends the `clarify` Tool to a loop's existing tools array — the shared
+ * compose helper every consumer (chat: search + cite + clarify; cleanup:
+ * apply_edits + clarify; sort: apply_edits + clarify) uses so the grouping
+ * is uniform: same Tool class, same OpenAI serialization, no separate
+ * mechanism. The tool is simply present; the model calls it at its
+ * discretion (no intent-detection gate). */
+export function withClarify(tools: Tool[], askProvider: ClarifyAnswerProvider): Tool[] {
+  return [
+    ...tools,
+    new Tool(
+      CLARIFY_TOOL.name,
+      CLARIFY_TOOL.description,
+      CLARIFY_TOOL.parameters,
+      (args) => clarifyWith(args, askProvider),
+    ),
+  ];
 }

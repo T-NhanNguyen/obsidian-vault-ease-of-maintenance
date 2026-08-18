@@ -24,6 +24,7 @@ import {
   setClarifyAnswerProvider,
   resetClarifyAnswerProvider,
   resetCitationTracker,
+  withClarify,
 } from "../../src/agent/tools";
 import { updateSettings, defaultSettings } from "../../src/config";
 import { DatabaseManager } from "../../src/indexer/db";
@@ -339,5 +340,54 @@ describe("clarify tool (TEST-06)", () => {
     expect(CLARIFY_TOOL.name).toBe("clarify");
     expect(CLARIFY_TOOL.parameters.required).toEqual(["question"]);
     expect(CLARIFY_TOOL.parameters.properties.deadline).toBeDefined();
+  });
+});
+
+describe("withClarify compose helper (TEST-06b)", () => {
+  it("appends the clarify tool to the loop's tools array (same Tool class, same serialization)", () => {
+    const base = [new Tool("search_index", "s", { type: "object", properties: {} }, () => "ok")];
+    const tools = withClarify(base, () => "answer");
+    expect(tools.map(t => t.name)).toEqual(["search_index", "clarify"]);
+    const wire = tools[1].toOpenAiTool();
+    expect(wire.function.name).toBe("clarify");
+    expect(wire.function.parameters!.required).toEqual(["question"]);
+    // The caller's array is not mutated — the helper returns a new array.
+    expect(base).toHaveLength(1);
+  });
+
+  it("routes the tool call through the GIVEN provider, not the global one", async () => {
+    const seen: unknown[] = [];
+    const tools = withClarify([], (args) => {
+      seen.push(args);
+      return "from-provider";
+    });
+    setClarifyAnswerProvider(() => "from-global");
+    const result = await tools[0].call({
+      question: "Which folder?",
+      options: ["a"],
+      context: "ctx",
+      deadline: "2030-01-01T00:00:00Z",
+    });
+    expect(result).toBe("from-provider");
+    expect(seen).toEqual([{
+      question: "Which folder?",
+      options: ["a"],
+      context: "ctx",
+      deadline: "2030-01-01T00:00:00Z",
+    }]);
+  });
+
+  it("returns the NO_ANSWER marker when the provider declines", async () => {
+    const tools = withClarify([], () => null);
+    await expect(tools[0].call({ question: "q", deadline: "2030-01-01T00:00:00Z" }))
+      .resolves.toBe("NO_ANSWER:2030-01-01T00:00:00Z");
+  });
+
+  it("keeps the tool's no-write contract — calls never touch the vault", async () => {
+    const vault = makeToolVault(BASE_NOTE);
+    const before = fs.readdirSync(vault.vaultDir).sort();
+    const tools = withClarify([], () => "answer");
+    await tools[0].call({ question: "Where should this go?" });
+    expect(fs.readdirSync(vault.vaultDir).sort()).toEqual(before);
   });
 });
