@@ -10,16 +10,31 @@
 // content-only ⇒ not capable; any transport error ⇒ `unknown` (the caller
 // falls back to the current agentic behavior and the probe is retried lazily).
 //
-// Probe failures are SILENT by design: on a fresh install with no model
-// configured the user must not be notified that the model is unreachable.
-// Notification happens once at startup only when detection SUCCEEDS (see
-// main.ts runCapabilityStartupNotice).
+// probeConnection() is the same ping exposed as a reusable result — the
+// settings page's "Test connection" button calls it too, so the capability
+// detector and the button share one code path (DRY).
+//
+// Probe failures are SILENT by design for detection: on a fresh install with
+// no model configured the user must not be notified that the model is
+// unreachable. Notification happens once at startup only when detection
+// SUCCEEDS (see main.ts runCapabilityStartupNotice); the settings button
+// surfaces probeConnection()'s result directly to the user.
 
 import { errorMessage } from "../errors";
 import { settings } from "../config";
 import { LLMClient, Tool } from "./llm";
 
 export type ToolCallCapability = "tool_calls" | "no_tool_calls" | "unknown";
+
+/** Result of the shared connection probe — the reusable ping the settings
+ * page's "Test connection" button and the capability detector both use.
+ * connected is true whenever the chat endpoint responded (2xx); toolCalls
+ * reports what the probe model actually did. error is set only on failure. */
+export interface ConnectionProbeResult {
+  connected: boolean;
+  toolCalls: boolean;
+  error?: string;
+}
 
 const PROBE_SYSTEM_PROMPT =
   "You have a tool named ping. You MUST call it now — do not answer in text.";
@@ -68,6 +83,22 @@ export async function detectToolCallSupport(): Promise<ToolCallCapability> {
 }
 
 async function doProbe(model: string): Promise<ToolCallCapability> {
+  const result = await probeConnection();
+  if (!result.connected) {
+    console.warn(`[capability] Tool-call probe failed: ${result.error}`);
+    return "unknown";
+  }
+  return result.toolCalls ? "tool_calls" : "no_tool_calls";
+}
+
+/**
+ * Ping the configured API exactly like the tool-call probe: one tiny chat
+ * completion with the throwaway ping tool. 2xx ⇒ connected (the API key and
+ * base URL are reachable); any transport/HTTP error ⇒ connected:false with a
+ * readable error. Used by detectToolCallSupport (above) and by the settings
+ * page's "Test connection" button — one code path, no duplication.
+ */
+export async function probeConnection(): Promise<ConnectionProbeResult> {
   try {
     const client = probeClientFactory
       ? probeClientFactory()
@@ -81,9 +112,8 @@ async function doProbe(model: string): Promise<ToolCallCapability> {
     const madeToolCall = history.some(
       m => m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0,
     );
-    return madeToolCall ? "tool_calls" : "no_tool_calls";
+    return { connected: true, toolCalls: madeToolCall };
   } catch (e) {
-    console.warn(`[capability] Tool-call probe failed: ${errorMessage(e)}`);
-    return "unknown";
+    return { connected: false, toolCalls: false, error: errorMessage(e) };
   }
 }

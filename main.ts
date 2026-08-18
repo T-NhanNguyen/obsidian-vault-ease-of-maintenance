@@ -11,7 +11,7 @@ import type { SettingDefinition, SettingDefinitionItem } from "obsidian";
 import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME } from "./src/config";
 import { parseConfigYaml, mergeConfigLayers } from "./src/config-yaml";
 import { errorMessage } from "./src/errors";
-import { detectToolCallSupport } from "./src/agent/capability";
+import { detectToolCallSupport, probeConnection } from "./src/agent/capability";
 import { closeChatSession } from "./src/agent/chat_session";
 import {
   runCleanup,
@@ -118,15 +118,28 @@ function resolveEmbeddingDimensions(model: string, configured: number): number {
 // cannot drift: the declarative getSettingDefinitions() (Obsidian 1.13.0+
 // settings search) and the imperative display() (Obsidian < 1.13.0).
 
-interface SettingMeta {
-  kind: "text" | "textarea" | "dropdown";
-  key: keyof PluginSettings;
+interface SettingMetaBase {
   name: string;
   desc: string;
   placeholder?: string;
+  buttonText?: string;
+}
+
+/** A value-bearing setting — stores one PluginSettings key. */
+interface SettingValueMeta extends SettingMetaBase {
+  kind: "text" | "textarea" | "dropdown";
+  key: keyof PluginSettings;
   rows?: number;
   options?: Record<string, string>;
 }
+
+/** An action row — runs a handler on click, stores nothing (no key). */
+interface SettingButtonMeta extends SettingMetaBase {
+  kind: "button";
+  buttonText: string;
+}
+
+type SettingMeta = SettingValueMeta | SettingButtonMeta;
 
 const SETTING_META: SettingMeta[] = [
   {
@@ -163,6 +176,12 @@ const SETTING_META: SettingMeta[] = [
     name: "Embedding model",
     desc: "Model for text embeddings.",
     placeholder: "text-embedding-3-small",
+  },
+  {
+    kind: "button",
+    name: "Test connection",
+    desc: "Ping the configured API (the same probe chat's tool-call detection uses) to confirm the API key and base URL are reachable.",
+    buttonText: "Test connection",
   },
   {
     kind: "text",
@@ -253,6 +272,17 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
 
   private renderImperativeSetting(containerEl: HTMLElement, meta: SettingMeta): void {
     const setting = new Setting(containerEl).setName(meta.name).setDesc(meta.desc);
+
+    if (meta.kind === "button") {
+      setting.addButton((button) => {
+        button.setButtonText(meta.buttonText);
+        button.onClick(() => {
+          void this.testConnection(button.buttonEl, meta.buttonText);
+        });
+      });
+      return;
+    }
+
     const currentValue = this.plugin.pluginSettings[meta.key];
 
     if (meta.kind === "dropdown") {
@@ -309,6 +339,16 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         },
       };
     }
+    if (meta.kind === "button") {
+      // SettingDefinitionAction — a clickable row, no stored value.
+      return {
+        ...base,
+        action: (el) => {
+          const buttonEl = el.querySelector("button");
+          void this.testConnection(buttonEl, meta.buttonText);
+        },
+      };
+    }
     return {
       ...base,
       control: {
@@ -317,6 +357,40 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         placeholder: meta.placeholder,
       },
     };
+  }
+
+  // "Test connection" button handler — runs the shared probe
+  // (capability.probeConnection): the same ping chat's tool-call detection
+  // uses. Success surfaces the tool-call outcome (chat capability); failure
+  // tells the user to check their API key and base URL (the technical detail
+  // goes to the console). The button is disabled + shows "Testing…" while
+  // the probe is in flight (retries can take several seconds).
+  private async testConnection(
+    buttonEl: HTMLButtonElement | null,
+    restoreText: string,
+  ): Promise<void> {
+    if (buttonEl) {
+      buttonEl.disabled = true;
+      buttonEl.textContent = "Testing…";
+    }
+    try {
+      const result = await probeConnection();
+      if (result.connected) {
+        new Notice(
+          result.toolCalls
+            ? "Connection OK — API responded; tool calling supported."
+            : "Connection OK — API responded; this model can't call tools (chat uses retrieval fallback).",
+        );
+      } else {
+        console.warn(`[settings] Connection test failed: ${result.error}`);
+        new Notice("Connection error — check your API key and base URL.", 10000);
+      }
+    } finally {
+      if (buttonEl) {
+        buttonEl.disabled = false;
+        buttonEl.textContent = restoreText;
+      }
+    }
   }
 
   applySettings(): void {
