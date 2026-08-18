@@ -74,7 +74,9 @@ function manifestContextPrompt(uncoveredPaths: string[]): string {
     "\n\nManifest task context: the vault manifest has no purpose for these folders yet: " +
     uncoveredPaths.join(", ") +
     ". If the user's task concerns the manifest, ask for each folder's purpose " +
-    "with the clarify tool (one folder per call, folder path in the question)."
+    "with the clarify tool (one folder per call, folder path in the question). " +
+    "Do not call search_index for the manifest task — the folder list above is all " +
+    "the information you need."
   );
 }
 
@@ -263,6 +265,10 @@ async function runChatQueryAgentic(
     // the same reason is what the settings "Test connection" button probes.
     console.warn(`[chat] Synthesis unavailable — LLM error: ${errorMessage(e)}`);
     answer = `[Synthesis unavailable — LLM error: ${errorMessage(e)}]`;
+    // The run failed — never surface a partial run's leftovers (sources /
+    // citations the model registered before the failure) under the error.
+    resetChatSearchRegistry();
+    resetCitationTracker();
   }
 
   return {

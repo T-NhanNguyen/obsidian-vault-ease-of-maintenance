@@ -58,6 +58,26 @@ class StubLlmClient implements ILlmClient {
   }
 }
 
+class FailAfterLlmClient implements ILlmClient {
+  private queue: ChatResponse[];
+
+  constructor(queue: ChatResponse[]) {
+    this.queue = [...queue];
+  }
+
+  async chatCompletion(
+    _model: string,
+    _messages: ChatMessage[],
+    _tools?: ChatTool[] | null,
+  ): Promise<ChatResponse> {
+    const next = this.queue.shift();
+    if (next) return next;
+    // The failure the user hit: the local server returned a body without
+    // choices on a later turn of the multi-turn tool conversation.
+    throw new Error("Malformed LLM response: missing choices");
+  }
+}
+
 function toolCallResponse(name: string, args: Record<string, unknown>, id = "call_1"): ChatResponse {
   return {
     completionId: "c",
@@ -201,6 +221,27 @@ describe("chat agent loop clarify interception", () => {
     expect(response.answer).toBe("Left it uncovered.");
     // No answer → nothing to reconcile → no proposal.
     expect(response.clarifyProposal).toBeUndefined();
+  });
+
+  it("a failed run clears partial-run leftovers — no stale sources under the error", async () => {
+    const vault = makeVault({ "Inbox": ["i.md"] });
+    writeManifest(vault, GENERATED_H1 + "\n");
+    updateSettings({ vaultPath: vault });
+    openChatSession(vault);
+
+    // The model registers a citation first (cite_source), then the server
+    // fails on a later turn — exactly the user's reported failure mode.
+    const chatStub = new FailAfterLlmClient([
+      toolCallResponse("cite_source", { source_id: 1 }),
+    ]);
+    setChatClientFactory(() => new LLMClient(AGENT_MODEL, chatStub));
+    setProbeClientFactory(() => new LLMClient("probe-model", new StubLlmClient([toolCallResponse("ping", {})])));
+
+    const response = await runChatQuery("explain the source", async () => null);
+    expect(response.answer).toContain("Synthesis unavailable — LLM error: Malformed LLM response");
+    // The error bubble must not render the failed run's citations/sources.
+    expect(response.citationMap).toEqual({});
+    expect(response.results).toEqual([]);
   });
 });
 

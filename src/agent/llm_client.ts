@@ -266,7 +266,12 @@ function sleep(ms: number): Promise<void> {
 
 function parseResponse(data: ChatCompletionResponse): ChatResponse {
   if (!data || typeof data !== "object" || !Array.isArray(data.choices) || !data.choices[0]) {
-    throw new Error("Malformed LLM response: missing choices");
+    // Surface what the server ACTUALLY returned — "missing choices" is
+    // usually a local-server template/error page, not a plugin fault.
+    const snippet = JSON.stringify(data).slice(0, 300);
+    throw new Error(
+      `Malformed LLM response: missing choices — server returned ${snippet || "(empty body)"}`,
+    );
   }
   const choice = data.choices[0];
   const msg = choice.message ?? {};
