@@ -92,12 +92,6 @@ describe("citeSource tracker", () => {
     expect(citeSource({ source_id: 2 })).toBe("[1]");
   });
 
-  it("rejects invalid source_id values", () => {
-    expect(citeSource({ source_id: 0 })).toContain("Error");
-    expect(citeSource({ source_id: -1 })).toContain("Error");
-    expect(citeSource({ source_id: NaN })).toContain("Error");
-  });
-
   it("resetCitationTracker clears the counter and map", () => {
     citeSource({ source_id: 1 });
     citeSource({ source_id: 2 });

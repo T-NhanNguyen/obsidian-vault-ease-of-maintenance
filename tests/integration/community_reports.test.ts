@@ -6,10 +6,9 @@
 //      DatabaseManager facade → in-process worker channel → sql.js engine).
 //   2. The build-side report pass: one report per community, the LLM INPUTS
 //      (which sections reached each prompt), model + token recording.
-//   3. globalQuery end-to-end: reports ranked, synthesis grounded only in
-//      reports (no raw section body leaks into the prompt).
-//   4. The offline degradation: a build with no LLM leaves reports absent,
-//      and globalQuery returns mode "local" with a clear message.
+//   3. The offline degradation: a build with no LLM leaves reports absent
+//      (globalQuery's ranking/degradation behavior itself is pinned at the
+//      unit level — tests/unit/community_reports.test.ts).
 
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";
@@ -19,7 +18,6 @@ import { FakeEmbedder } from "../fixtures/fake_embedder";
 import { Settings } from "../../src/config";
 import { Indexer } from "../../src/indexer/indexer";
 import { DatabaseManager } from "../../src/indexer/db";
-import { globalQuery } from "../../src/indexer/community_reports";
 import type {
   CommunityReportRow,
   CommunityRow,
@@ -54,10 +52,6 @@ const FIXTURE_FILES: Record<string, string> = {
     "",
   ].join("\n"),
 };
-
-// Raw section BODY phrases (never headings) — must never leak into the
-// global synthesis prompt (reports do not echo section bodies).
-const RAW_SECTION_BODIES = ["Efficiency above 60 percent", "Cold brew ratios"];
 
 function makeSettings(vaultPath: string, dbPath: string, reports?: Partial<Settings["reports"]>): Settings {
   return {
@@ -103,16 +97,6 @@ class BuildReportLlm implements ReportLlm {
   }
 }
 
-/** Global-mode synthesis stub — one queued answer. */
-class StubSynthesisLlm implements ReportLlm {
-  readonly seenUsers: string[] = [];
-
-  async complete(_system: string, user: string): Promise<ReportLlmResult> {
-    this.seenUsers.push(user);
-    return { content: "Global answer.", totalTokens: 5, model: "stub-model" };
-  }
-}
-
 interface BuiltHarness {
   settings: Settings;
   fakeEmbedder: FakeEmbedder;
@@ -133,20 +117,6 @@ async function buildWithReports(reports?: Partial<Settings["reports"]>): Promise
   const indexer = new Indexer(settings, fakeEmbedder, reportLlm);
   await indexer.build();
   return { settings, fakeEmbedder, reportLlm };
-}
-
-async function buildWithoutReports(): Promise<{ settings: Settings }> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-reports-none-"));
-  const vaultDir = path.join(tmpDir, "vault");
-  for (const [relPath, content] of Object.entries(FIXTURE_FILES)) {
-    const fullPath = path.join(vaultDir, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content.replace(/^\n+/, ""));
-  }
-  const settings = makeSettings(vaultDir, path.join(tmpDir, "index.db"));
-  const indexer = new Indexer(settings, new FakeEmbedder(64));
-  await indexer.build();
-  return { settings };
 }
 
 // ---------------------------------------------------------------------------
@@ -315,54 +285,6 @@ describe("ReportsConfigTuning (config.yaml reports: section reaches the build)",
       user.split("\n").filter((line) => line.startsWith("### ")),
     );
     expect(headings).toHaveLength(4);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// globalQuery end-to-end on a built index
-// ---------------------------------------------------------------------------
-
-describe("globalQuery on a built index", () => {
-  it("answers from reports and grounds the synthesis only in them", async () => {
-    const { settings, fakeEmbedder } = await buildWithReports();
-    const db = new DatabaseManager(settings.dbPath);
-    try {
-      const llm = new StubSynthesisLlm();
-      const result = await globalQuery(fakeEmbedder, db, llm, "what is this vault about?");
-
-      expect(result.mode).toBe("global");
-      expect(result.answer).toBe("Global answer.");
-      expect(result.selectedReports.length).toBeGreaterThanOrEqual(1);
-
-      // Map-reduce: the synthesis prompt is grounded ONLY in the reports —
-      // report text + community labels, never raw section bodies.
-      const user = llm.seenUsers[0];
-      expect(user).toContain("Summary of");
-      for (const body of RAW_SECTION_BODIES) {
-        expect(user).not.toContain(body);
-      }
-    } finally {
-      await db.close();
-    }
-  });
-
-  it("degrades to local mode with a clear message when no reports exist", async () => {
-    const { settings } = await buildWithoutReports();
-    const fakeEmbedder = new FakeEmbedder(64);
-    const db = new DatabaseManager(settings.dbPath);
-    try {
-      expect(await db.getAllCommunityReports()).toEqual([]);
-
-      const llm = new StubSynthesisLlm();
-      const result = await globalQuery(fakeEmbedder, db, llm, "what is this vault about?");
-
-      expect(result.mode).toBe("local");
-      expect(result.answer).toBe("");
-      expect(result.message).toContain("No community reports");
-      expect(llm.seenUsers).toHaveLength(0); // no LLM call — no hang
-    } finally {
-      await db.close();
-    }
   });
 });
 

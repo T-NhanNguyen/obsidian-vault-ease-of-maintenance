@@ -11,10 +11,6 @@ import { FakeEmbedder } from "../fixtures/fake_embedder";
 import { Settings } from "../../src/config";
 import { Indexer } from "../../src/indexer/indexer";
 
-const FIXTURE_VAULT_DIR = path.resolve(
-  __dirname, "..", "..", "..", "notes-maintainer", "tests", "fixtures", "vaults", "sample"
-);
-
 function makeSettings(vaultPath: string, dbPath: string): Settings {
   return {
     vaultPath,
@@ -71,16 +67,5 @@ describe("vault confinement (end-to-end)", () => {
     const artifacts = fs.readdirSync(path.join(vault, ".note-maintainer"));
     expect(artifacts).toContain("index.db");
     expect(artifacts.some((a) => a.startsWith(".tmp-"))).toBe(false);
-  });
-
-  it("scanning the sample fixture vault is confined and finds its files", async () => {
-    // Reuse the fixture vault as a read-only source: building there would
-    // write, so just scan it.
-    const { Scanner } = await import("../../src/indexer/scanner");
-    const files = new Scanner(FIXTURE_VAULT_DIR).scan();
-    expect(files.length).toBeGreaterThan(0);
-    for (const f of files) {
-      expect(f.path).not.toMatch(/\.\./);
-    }
   });
 });

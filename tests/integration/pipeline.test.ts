@@ -180,12 +180,21 @@ describe("QueryRanking", () => {
     settings = makeSettings(FIXTURE_VAULT_DIR, path.join(tmpDir, "index.db"));
   });
 
-  it("bloom query ranks bloom first", async () => {
+  it("bloom query ranks bloom first and results carry the citation contract", async () => {
     const fakeEmbedder = new FakeEmbedder(64);
     const indexer = new Indexer(settings, fakeEmbedder);
     await indexer.build();
     const results = await indexer.query("bloom energy fuel cells", 3);
     expect(results[0].filePath).toBe("10_Stocks/Bloom_Energy/bloom-energy-overview.md");
+    // The chat answer path renders provenance from these fields — the query
+    // must always return them, not just a ranked path list.
+    for (const r of results) {
+      expect(r).toHaveProperty("nodeKey");
+      expect(r).toHaveProperty("filePath");
+      expect(r).toHaveProperty("headingPath");
+      expect(r).toHaveProperty("text");
+      expect(r).toHaveProperty("score");
+    }
   });
 
   it("bitcoin query ranks iren first", async () => {
@@ -202,21 +211,6 @@ describe("QueryRanking", () => {
     await indexer.build();
     const results = await indexer.query("grid generation queues", 3);
     expect(results[0].filePath).toBe("20_AI_Speculations/datacenter-power-demand.md");
-  });
-
-  it("query returns citation fields", async () => {
-    const fakeEmbedder = new FakeEmbedder(64);
-    const indexer = new Indexer(settings, fakeEmbedder);
-    await indexer.build();
-    const results = await indexer.query("sovereign ai strategies", 2);
-    expect(results.length).toBeGreaterThan(0);
-    for (const r of results) {
-      expect(r).toHaveProperty("nodeKey");
-      expect(r).toHaveProperty("filePath");
-      expect(r).toHaveProperty("headingPath");
-      expect(r).toHaveProperty("text");
-      expect(r).toHaveProperty("score");
-    }
   });
 });
 

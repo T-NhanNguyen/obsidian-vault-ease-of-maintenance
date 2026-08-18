@@ -95,59 +95,35 @@ describe("Schema", () => {
     }
   });
 
-  it("sections columns", async () => {
+  it("current-engine tables expose the columns the build and query paths read", async () => {
     const dir = tmpDir();
     const dbPath = path.join(dir, "index.db");
     const db = new DatabaseManager(dbPath);
     await db.initialize();
     await db.close();
 
-    const cols = columns(dbPath, "SECTIONS");
-    expect(cols.has("node_key")).toBe(true);
-    expect(cols.has("file_id")).toBe(true);
-    expect(cols.has("heading_path")).toBe(true);
-    expect(cols.has("embedding")).toBe(true);
-  });
+    const sectionCols = columns(dbPath, "SECTIONS");
+    expect(sectionCols.has("node_key")).toBe(true);
+    expect(sectionCols.has("file_id")).toBe(true);
+    expect(sectionCols.has("heading_path")).toBe(true);
+    expect(sectionCols.has("embedding")).toBe(true);
 
-  it("edges columns", async () => {
-    const dir = tmpDir();
-    const dbPath = path.join(dir, "index.db");
-    const db = new DatabaseManager(dbPath);
-    await db.initialize();
-    await db.close();
+    const edgeCols = columns(dbPath, "EDGES");
+    expect(edgeCols.has("src_key")).toBe(true);
+    expect(edgeCols.has("dst_key")).toBe(true);
+    expect(edgeCols.has("kind")).toBe(true);
+    expect(edgeCols.has("weight")).toBe(true);
 
-    const cols = columns(dbPath, "EDGES");
-    expect(cols.has("src_key")).toBe(true);
-    expect(cols.has("dst_key")).toBe(true);
-    expect(cols.has("kind")).toBe(true);
-    expect(cols.has("weight")).toBe(true);
-  });
+    const metaCols = columns(dbPath, "INDEX_META");
+    expect(metaCols.has("vault_version")).toBe(true);
+    expect(metaCols.has("manifest_hash")).toBe(true);
 
-  it("index meta columns", async () => {
-    const dir = tmpDir();
-    const dbPath = path.join(dir, "index.db");
-    const db = new DatabaseManager(dbPath);
-    await db.initialize();
-    await db.close();
-
-    const cols = columns(dbPath, "INDEX_META");
-    expect(cols.has("vault_version")).toBe(true);
-    expect(cols.has("manifest_hash")).toBe(true);
-  });
-
-  it("community reports columns", async () => {
-    const dir = tmpDir();
-    const dbPath = path.join(dir, "index.db");
-    const db = new DatabaseManager(dbPath);
-    await db.initialize();
-    await db.close();
-
-    const cols = columns(dbPath, "COMMUNITY_REPORTS");
-    expect(cols.has("community_id")).toBe(true);
-    expect(cols.has("report")).toBe(true);
-    expect(cols.has("model")).toBe(true);
-    expect(cols.has("tokens")).toBe(true);
-    expect(cols.has("built_at")).toBe(true);
+    const reportCols = columns(dbPath, "COMMUNITY_REPORTS");
+    expect(reportCols.has("community_id")).toBe(true);
+    expect(reportCols.has("report")).toBe(true);
+    expect(reportCols.has("model")).toBe(true);
+    expect(reportCols.has("tokens")).toBe(true);
+    expect(reportCols.has("built_at")).toBe(true);
   });
 
   it("writes the engine version marker", async () => {

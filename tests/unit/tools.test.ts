@@ -141,7 +141,12 @@ describe("cite_source through Tool.call (TEST-03)", () => {
       CITE_SOURCE_TOOL.parameters,
       citeSource,
     );
+    // 0, negative, NaN, and absent ids are all invalid — the raw-function
+    // cases were merged here from chat_context.test.ts (single DRY home for
+    // the invalid-id guard, exercised through the dispatch path).
     await expect(tool.call({ source_id: 0 })).resolves.toContain("Error");
+    await expect(tool.call({ source_id: -1 })).resolves.toContain("Error");
+    await expect(tool.call({ source_id: NaN })).resolves.toContain("Error");
     await expect(tool.call({})).resolves.toContain("Error");
   });
 });
