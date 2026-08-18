@@ -9,6 +9,8 @@ import { VaultIO } from "../io/vault_io";
 import { parseIgnorePatterns } from "../agent/engine";
 import { Chunker, SectionInfo } from "./chunker";
 import { DatabaseManager, FileWriteInput, SearchResult, SectionWriteInput } from "./db";
+import { DbHost, getDefaultDbHost } from "./db_host";
+import { EmbeddingCache } from "./embedding_cache";
 import { hybridQuery, HybridQueryOptions } from "./graph_search";
 import { assignCommunities, computeSeedEmbeddings, ensureAutoCommunities } from "./communities";
 import { generateCommunityReports, ReportLlm } from "./community_reports";
@@ -19,6 +21,10 @@ import { Embedder, IEmbedder } from "./embedder";
 import { GraphBuilder } from "./graph";
 import { ManifestParser } from "./manifest";
 import { FileInfo, Scanner } from "./scanner";
+
+/** Sidecar checkpoint filename — a sibling of index.db that survives both
+ * clearAll() and retireLegacyIndex() (see embedding_cache.ts). */
+const EMBEDDING_CACHE_FILENAME = "embedding-cache.json";
 
 // Journal replay entry — journal rows written by the sort pipeline.
 interface JournalEntryRecord {
@@ -45,13 +51,22 @@ export class Indexer {
   embedder: IEmbedder;
   manifestParser: ManifestParser;
   private io: VaultIO;
+  private readonly embeddingCache: EmbeddingCache;
   private readonly reportLlm?: ReportLlm;
   private readonly extractionLlm?: ReportLlm;
 
-  constructor(customSettings?: Settings, embedder?: IEmbedder, reportLlm?: ReportLlm, extractionLlm?: ReportLlm) {
+  constructor(customSettings?: Settings, embedder?: IEmbedder, reportLlm?: ReportLlm, extractionLlm?: ReportLlm, host?: DbHost) {
     this.settings = customSettings || settings;
     this.io = new VaultIO(this.settings.vaultPath);
-    this.db = new DatabaseManager(this.settings.dbPath);
+    // The embedding cache uses the SAME host I/O as the DB (the Obsidian
+    // adapter in production, VaultIO/fs in Node) — a raw-fs cache would
+    // re-introduce the store-review "Direct Filesystem Access" trigger.
+    const dbHost = host ?? getDefaultDbHost();
+    this.db = new DatabaseManager(this.settings.dbPath, dbHost);
+    this.embeddingCache = new EmbeddingCache(
+      dbHost.io,
+      path.join(path.dirname(this.settings.dbPath), EMBEDDING_CACHE_FILENAME),
+    );
     this.scanner = new Scanner(this.settings.vaultPath, parseIgnorePatterns(this.settings.ignorePatterns));
     this.chunker = new Chunker();
     this.graph = new GraphBuilder(this.db, {
@@ -90,6 +105,14 @@ export class Indexer {
 
       // Seed embedding for community assignment
       const seedEmbeddings = await computeSeedEmbeddings(this.embedder, seeds);
+
+      // Load the embedding cache once, before the file loop — an interrupted
+      // build that already flushed files 1..N re-embeds only the rest
+      // (drop-and-return; see embedding_cache.ts).
+      await this.embeddingCache.load({
+        model: this.settings.embedding.model,
+        dimensions: this.settings.embedding.dimensions,
+      });
 
       // Scan and index files
       const files = this.scanner.scan();
@@ -192,6 +215,13 @@ export class Indexer {
       }
 
       if (changed.length === 0 && deleted.length === 0) return;
+
+      // Embedding-cache checkpoint — unchanged sections are served from the
+      // sidecar; only the changed sections hit the embedder.
+      await this.embeddingCache.load({
+        model: this.settings.embedding.model,
+        dimensions: this.settings.embedding.dimensions,
+      });
 
       const filePaths = new Set(files.map((f) => f.path));
       const manifestPath = this.manifestParser.findManifest();
@@ -318,6 +348,13 @@ export class Indexer {
       const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
       const affectedFiles = new Set<string>();
 
+      // Embedding-cache checkpoint — replayed files hit the sidecar when
+      // their section text is already embedded.
+      await this.embeddingCache.load({
+        model: this.settings.embedding.model,
+        dimensions: this.settings.embedding.dimensions,
+      });
+
       for (const entry of journalEntries) {
         const verdict = entry.verdict || "";
         const filePath = entry.file_path || "";
@@ -428,27 +465,50 @@ export class Indexer {
       contentHash: section.contentHash,
     }));
 
-    // Embed all section texts in ONE batch HTTP round trip per file
-    // (embedBatch — one request instead of one per section). On batch
-    // failure, fall back to per-section embeds so a single bad call cannot
-    // empty the whole file's embeddings (today's resilience, preserved).
-    let embeddings: number[][];
-    try {
-      embeddings = await this.embedder.embedBatch(dbSections.map((s) => s.text || ""));
-    } catch {
-      embeddings = [];
-      for (const section of dbSections) {
-        try {
-          embeddings.push(await this.embedder.embed(section.text || ""));
-        } catch {
-          embeddings.push([]);
+    // Embed ONLY the uncached sections — one batch HTTP round trip per file
+    // for its misses (embedBatch — one request instead of one per section).
+    // On batch failure, fall back to per-section embeds so a single bad call
+    // cannot empty the whole file's embeddings (today's resilience,
+    // preserved). A cache HIT is proof the section is already embedded — no
+    // HTTP, no re-embed (drop-and-return on interrupted builds).
+    const missIndexes: number[] = [];
+    for (let i = 0; i < dbSections.length; i++) {
+      const hash = dbSections[i].contentHash || "";
+      const hit = hash ? this.embeddingCache.get(hash) : null;
+      dbSections[i].embedding = hit ?? undefined; // hit → reuse, no HTTP
+      if (!hit) missIndexes.push(i);
+    }
+
+    if (missIndexes.length > 0) {
+      const missTexts = missIndexes.map((i) => dbSections[i].text || "");
+      let fresh: number[][] = [];
+      try {
+        fresh = await this.embedder.embedBatch(missTexts);
+      } catch {
+        fresh = [];
+        for (const i of missIndexes) {
+          try {
+            fresh.push(await this.embedder.embed(dbSections[i].text || ""));
+          } catch {
+            fresh.push([]);
+          }
         }
       }
+      for (let k = 0; k < missIndexes.length; k++) {
+        const i = missIndexes[k];
+        const vec = fresh[k] ?? [];
+        dbSections[i].embedding = vec;
+        const hash = dbSections[i].contentHash || "";
+        if (hash) this.embeddingCache.put(hash, vec);
+      }
+      // Per-batch checkpoint write: a file that introduced new vectors is
+      // durable from this point on. Hit-only files add nothing — no write.
+      await this.embeddingCache.flush();
     }
 
     for (let i = 0; i < sections.length; i++) {
       const section = sections[i];
-      const embedding = embeddings[i] ?? [];
+      const embedding = dbSections[i].embedding ?? [];
       // Attach to BOTH the db row and the returned section object (matches
       // Python: section["embedding"] = embedding)
       section.embedding = embedding;
