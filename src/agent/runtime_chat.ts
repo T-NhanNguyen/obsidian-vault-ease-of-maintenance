@@ -73,8 +73,11 @@ function manifestContextPrompt(uncoveredPaths: string[]): string {
   return (
     "\n\nManifest task context: the vault manifest has no purpose for these folders yet: " +
     uncoveredPaths.join(", ") +
-    ". If the user's task concerns the manifest, ask for each folder's purpose " +
+    ". If the user's task concerns the manifest: ask for each folder's purpose " +
     "with the clarify tool (one folder per call, folder path in the question). " +
+    "After the user answers, propose a concise, well-worded purpose line (a few " +
+    "words, no file names) and confirm it with the user via clarify before moving " +
+    "on — the confirmed wording is what gets written to the manifest. " +
     "Do not call search_index for the manifest task — the folder list above is all " +
     "the information you need."
   );

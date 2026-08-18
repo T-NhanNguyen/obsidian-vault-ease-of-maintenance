@@ -310,6 +310,9 @@ function proposeManifestEdit(
  * turn is matched to the uncovered folder its question mentions (longest
  * path contained in the text, then unambiguous basename), sanitized, and
  * proposed through the same ops → diff pipeline as the ask-driven dialog.
+ * When a folder has several turns, the LAST answer wins — the model's
+ * propose-and-confirm pattern asks once for the raw purpose and again to
+ * confirm the refined wording; the confirmed line is what gets written.
  * Unmatched turns stay out of the proposal (they are conversation memory
  * only). Returns null when no turn matched an uncovered folder. */
 export function buildProposalFromTurns(input: {
@@ -318,10 +321,10 @@ export function buildProposalFromTurns(input: {
   turns: ClarifyTurnRecord[];
 }): ClarifyProposal | null {
   const context = computeManifestContext(input.vaultPath, input.folders);
-  const matched = new Map<string, ClarifyTurnRecord>(); // folderPath → turn
+  const matched = new Map<string, ClarifyTurnRecord>(); // folderPath → last turn
   for (const turn of input.turns) {
     const folderPath = matchFolderInQuestion(turn.question, context.uncovered);
-    if (folderPath && !matched.has(folderPath)) matched.set(folderPath, turn);
+    if (folderPath) matched.set(folderPath, turn);
   }
   if (matched.size === 0) return null;
 

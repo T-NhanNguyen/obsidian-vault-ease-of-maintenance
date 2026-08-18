@@ -14,6 +14,7 @@ import {
   computeUncoveredFolders,
   runClarifyDialog,
   buildManifestOps,
+  buildProposalFromTurns,
   lineDiff,
   parseFolderPurposes,
   writeClarifyProposal,
@@ -377,6 +378,62 @@ describe("writeClarifyProposal", () => {
     expect(() => writeClarifyProposal(vault, "_manifest.md", bad)).toThrow(
       /Manifest round-trip failed for X/,
     );
+  });
+});
+
+describe("buildProposalFromTurns", () => {
+  it("reconciles free-form Q&A turns to uncovered folders", () => {
+    const vault = makeVault({
+      "10_Stocks": ["IREN.md"],
+      "20_AI_Speculations": ["idea.md"],
+    });
+    const manifestPath = writeManifest(vault, GENERATED_H1 + "\n");
+
+    const proposal = buildProposalFromTurns({
+      vaultPath: vault,
+      folders: scanVaultFolders(vault, []),
+      turns: [
+        { question: "What is the purpose of the folder 20_AI_Speculations?", answer: "AI idea notes" },
+      ],
+    });
+
+    expect(proposal).not.toBeNull();
+    expect(proposal!.after).toContain("## 20_AI_Speculations/ <!-- AI idea notes -->");
+    // The covered folder never becomes a proposal.
+    expect(proposal!.after).not.toContain("10_Stocks/ <!--");
+    expect(proposal!.unanswered).toEqual(["10_Stocks"]);
+    expect(manifestPath).toBe("_manifest.md");
+  });
+
+  it("last answer wins — the model's propose-and-confirm pattern uses the confirmed wording", () => {
+    const vault = makeVault({ "99-assets": ["logo.png"] });
+    writeManifest(vault, GENERATED_H1 + "\n");
+
+    const proposal = buildProposalFromTurns({
+      vaultPath: vault,
+      folders: scanVaultFolders(vault, []),
+      turns: [
+        { question: "What is the purpose of the folder 99-assets?", answer: "attachments and images" },
+        { question: "I propose 'To hold attachments and images.' for 99-assets — confirm or edit:", answer: "To hold attachments and images." },
+      ],
+    });
+
+    expect(proposal!.after).toContain("## 99-assets/ <!-- To hold attachments and images. -->");
+    expect(proposal!.after).not.toContain("attachments and images <!--");
+  });
+
+  it("sanitizes answers and drops empty ones", () => {
+    const vault = makeVault({ "Inbox": ["i.md"] });
+    writeManifest(vault, GENERATED_H1 + "\n");
+
+    const proposal = buildProposalFromTurns({
+      vaultPath: vault,
+      folders: scanVaultFolders(vault, []),
+      turns: [
+        { question: "What is the purpose of the folder Inbox?", answer: "   " },
+      ],
+    });
+    expect(proposal).toBeNull();
   });
 });
 

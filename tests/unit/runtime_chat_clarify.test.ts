@@ -243,6 +243,42 @@ describe("chat agent loop clarify interception", () => {
     expect(response.citationMap).toEqual({});
     expect(response.results).toEqual([]);
   });
+
+  it("propose-and-confirm: the confirmed wording (last answer per folder) becomes the purpose", async () => {
+    const vault = makeVault({ "99-assets": ["logo.png"] });
+    writeManifest(vault, GENERATED_H1 + "\n");
+    updateSettings({ vaultPath: vault });
+    openChatSession(vault);
+
+    const chatStub = new StubLlmClient([
+      toolCallResponse(
+        "clarify",
+        { question: "What is the purpose of the folder 99-assets?" },
+        "call_c1",
+      ),
+      toolCallResponse(
+        "clarify",
+        { question: "I propose 'To hold attachments and images.' for 99-assets — confirm or edit:" },
+        "call_c2",
+      ),
+      contentOnlyResponse("Updated the manifest."),
+    ]);
+    setChatClientFactory(() => new LLMClient(AGENT_MODEL, chatStub));
+    setProbeClientFactory(() => new LLMClient("probe-model", new StubLlmClient([toolCallResponse("ping", {})])));
+
+    const answers: Record<string, string> = {
+      "What is the purpose of the folder 99-assets?": "attachments and images",
+      "I propose 'To hold attachments and images.' for 99-assets — confirm or edit:": "To hold attachments and images.",
+    };
+    const response = await runChatQuery("update the manifest for the folders", async (args) => {
+      return answers[args.question] ?? null;
+    });
+
+    // The proposal uses the CONFIRMED wording, not the first raw answer.
+    expect(response.clarifyProposal).not.toBeUndefined();
+    expect(response.clarifyProposal!.after).toContain("## 99-assets/ <!-- To hold attachments and images. -->");
+    expect(response.clarifyProposal!.after).not.toContain("attachments and images <!--");
+  });
 });
 
 describe("no-tool-call parity — deterministic dialog on the chat surface", () => {
