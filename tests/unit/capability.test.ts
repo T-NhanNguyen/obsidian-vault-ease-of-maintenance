@@ -16,6 +16,7 @@ import {
   detectToolCallSupport,
   setProbeClientFactory,
   resetCapabilityCache,
+  probeConnection,
 } from "../../src/agent/capability";
 import { updateSettings, defaultSettings } from "../../src/config";
 
@@ -110,5 +111,38 @@ describe("tool-call capability detection", () => {
     updateSettings({ agent: { model: "other-model", thinking: { chat: false, build: false, sort: false } } });
     stubFactory(new StubLlmClient([contentOnlyResponse()]));
     expect(await detectToolCallSupport()).toBe("no_tool_calls");
+  });
+});
+
+describe("probeConnection (the shared ping — settings \"Test connection\" button)", () => {
+  it("reports connected + toolCalls when the ping model calls the tool", async () => {
+    stubFactory(new StubLlmClient([toolCallResponse()]));
+    const result = await probeConnection();
+    expect(result.connected).toBe(true);
+    expect(result.toolCalls).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("reports connected without toolCalls when the ping answers in text only", async () => {
+    stubFactory(new StubLlmClient([contentOnlyResponse()]));
+    const result = await probeConnection();
+    expect(result.connected).toBe(true);
+    expect(result.toolCalls).toBe(false);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("reports a connection error with a readable reason when the API is unreachable", async () => {
+    stubFactory(new StubLlmClient([])); // empty queue → chatCompletion throws
+    const result = await probeConnection();
+    expect(result.connected).toBe(false);
+    expect(result.toolCalls).toBe(false);
+    expect(result.error).toBe("StubLlmClient: response queue exhausted");
+  });
+
+  it("every call probes again — no caching, so the button always re-pings", async () => {
+    stubFactory(new StubLlmClient([toolCallResponse(), contentOnlyResponse()]));
+    expect((await probeConnection()).toolCalls).toBe(true);
+    // Second click = second probe (a cached result would return true again).
+    expect((await probeConnection()).toolCalls).toBe(false);
   });
 });
