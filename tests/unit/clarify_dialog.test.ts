@@ -422,6 +422,45 @@ describe("buildProposalFromTurns", () => {
     expect(proposal!.after).not.toContain("attachments and images <!--");
   });
 
+  it("an affirmative confirmation resolves to the wording quoted in the confirm question", () => {
+    const vault = makeVault({ "99-assets": ["logo.png"] });
+    writeManifest(vault, GENERATED_H1 + "\n");
+
+    const proposal = buildProposalFromTurns({
+      vaultPath: vault,
+      folders: scanVaultFolders(vault, []),
+      turns: [
+        { question: "What is the purpose of the folder 99-assets?", answer: "images and attachments" },
+        {
+          question: "Based on your answer, here's a concise purpose line for 99-assets: \"Attachments: images and non-Markdown files\". Does this wording work for you?",
+          answer: "yes",
+        },
+      ],
+    });
+
+    expect(proposal!.after).toContain("## 99-assets/ <!-- Attachments: images and non-Markdown files -->");
+    expect(proposal!.after).not.toContain("<!-- yes -->");
+  });
+
+  it("a quoted folder name in a plain question is never mistaken for a proposal", () => {
+    const vault = makeVault({ "99-assets": ["logo.png"] });
+    writeManifest(vault, GENERATED_H1 + "\n");
+
+    // The user answers "yes" to the RAW purpose question — no confirm turn
+    // exists, so the answer falls back verbatim ("99-assets" is the folder
+    // name, not a proposal).
+    const proposal = buildProposalFromTurns({
+      vaultPath: vault,
+      folders: scanVaultFolders(vault, []),
+      turns: [
+        { question: "What is the purpose of the folder \"99-assets\"?", answer: "yes" },
+      ],
+    });
+
+    expect(proposal!.after).toContain("## 99-assets/ <!-- yes -->");
+    expect(proposal!.after).not.toContain("99-assets/ <!-- 99-assets -->");
+  });
+
   it("sanitizes answers and drops empty ones", () => {
     const vault = makeVault({ "Inbox": ["i.md"] });
     writeManifest(vault, GENERATED_H1 + "\n");

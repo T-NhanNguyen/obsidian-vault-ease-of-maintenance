@@ -23,6 +23,15 @@ export const MANIFEST_H1 = "# vault <!-- Auto-generated from GraphRAG index — 
 const FOLDER_FILE_SAMPLE = 6;
 const MAX_PURPOSE_CHARS = 120;
 
+// Short confirmations of a proposed purpose line (the model's propose-and-
+// confirm pattern). A match means "use the wording proposed in the confirm
+// question", not the answer text itself.
+const CONFIRM_AFFIRMATIVES = [
+  "yes", "y", "yeah", "yep", "ok", "okay", "sure", "perfect", "great",
+  "good", "works", "fine", "approved", "approve", "confirm", "confirmed",
+  "go ahead", "looks good", "sounds good", "that works", "that's fine",
+] as const;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -310,9 +319,10 @@ function proposeManifestEdit(
  * turn is matched to the uncovered folder its question mentions (longest
  * path contained in the text, then unambiguous basename), sanitized, and
  * proposed through the same ops → diff pipeline as the ask-driven dialog.
- * When a folder has several turns, the LAST answer wins — the model's
- * propose-and-confirm pattern asks once for the raw purpose and again to
- * confirm the refined wording; the confirmed line is what gets written.
+ * The LAST answer per folder wins — the model's propose-and-confirm pattern
+ * asks once for the raw purpose and again to confirm the refined wording.
+ * An affirmative confirmation ("yes", "looks good", …) resolves to the
+ * wording proposed in the confirm question; an edited reply is used as-is.
  * Unmatched turns stay out of the proposal (they are conversation memory
  * only). Returns null when no turn matched an uncovered folder. */
 export function buildProposalFromTurns(input: {
@@ -330,7 +340,7 @@ export function buildProposalFromTurns(input: {
 
   const answered: ClarifyAnswer[] = [];
   for (const [folderPath, turn] of matched) {
-    const purpose = sanitizePurpose(turn.answer);
+    const purpose = sanitizePurpose(resolvePurpose(turn, folderPath));
     if (purpose) {
       answered.push({ question: { folderPath, prompt: turn.question }, answer: purpose });
     }
@@ -339,6 +349,34 @@ export function buildProposalFromTurns(input: {
     .filter(folder => !matched.has(folder.path))
     .map(folder => folder.path);
   return proposeManifestEdit(context.manifestPath, context.before, answered, unanswered);
+}
+
+/** The purpose a confirm turn resolves to: an affirmative confirmation uses
+ * the wording quoted in the question (the model's proposal); anything else
+ * (an edit, or a plain answer) is the user's own text. */
+function resolvePurpose(turn: ClarifyTurnRecord, folderPath: string): string {
+  if (isAffirmativeConfirm(turn.answer)) {
+    const proposed = extractQuotedProposal(turn.question);
+    const basename = folderPath.split("/").pop();
+    // Guard: a quoted FOLDER NAME (e.g. "What is the purpose of the folder
+    // \"99-assets\"?") is not a proposal.
+    if (proposed && proposed !== folderPath && proposed !== basename) return proposed;
+  }
+  return turn.answer;
+}
+
+function isAffirmativeConfirm(answer: string): boolean {
+  const normalized = answer.trim().toLowerCase().replace(/[.!?,]+$/, "");
+  return CONFIRM_AFFIRMATIVES.some(token =>
+    normalized === token || normalized.startsWith(`${token} `),
+  );
+}
+
+/** The first quoted phrase (matching quote marks) in the text — the wording
+ * the model proposed for the manifest line. */
+function extractQuotedProposal(text: string): string | null {
+  const match = text.match(/(["'“”`])([^"'“”`]{2,})\1/);
+  return match ? match[2].trim() : null;
 }
 
 /** The folder an (unstructured) question mentions: the longest uncovered

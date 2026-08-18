@@ -77,7 +77,10 @@ function manifestContextPrompt(uncoveredPaths: string[]): string {
     "with the clarify tool (one folder per call, folder path in the question). " +
     "After the user answers, propose a concise, well-worded purpose line (a few " +
     "words, no file names) and confirm it with the user via clarify before moving " +
-    "on — the confirmed wording is what gets written to the manifest. " +
+    "on — put the proposed line in quotes inside the clarify question (e.g. " +
+    "I propose 'To hold attachments and images.' for 99-assets — confirm or edit:). " +
+    "If the user confirms, the quoted proposal is written to the manifest; if they " +
+    "reply with different text, their text is written. " +
     "Do not call search_index for the manifest task — the folder list above is all " +
     "the information you need."
   );

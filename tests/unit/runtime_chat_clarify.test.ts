@@ -279,6 +279,43 @@ describe("chat agent loop clarify interception", () => {
     expect(response.clarifyProposal!.after).toContain("## 99-assets/ <!-- To hold attachments and images. -->");
     expect(response.clarifyProposal!.after).not.toContain("attachments and images <!--");
   });
+
+  it("an affirmative confirm ('yes') resolves the quoted proposal from the confirm question", async () => {
+    const vault = makeVault({ "99-assets": ["logo.png"] });
+    writeManifest(vault, GENERATED_H1 + "\n");
+    updateSettings({ vaultPath: vault });
+    openChatSession(vault);
+
+    const chatStub = new StubLlmClient([
+      toolCallResponse(
+        "clarify",
+        { question: "What is the purpose of the folder 99-assets?" },
+        "call_c1",
+      ),
+      toolCallResponse(
+        "clarify",
+        { question: "Based on your answer, here's a concise purpose line for 99-assets: \"Attachments: images and non-Markdown files\". Does this wording work for you?" },
+        "call_c2",
+      ),
+      contentOnlyResponse("Updated the manifest."),
+    ]);
+    setChatClientFactory(() => new LLMClient(AGENT_MODEL, chatStub));
+    setProbeClientFactory(() => new LLMClient("probe-model", new StubLlmClient([toolCallResponse("ping", {})])));
+
+    const answers: Record<string, string> = {
+      "What is the purpose of the folder 99-assets?": "images and attachments",
+      "Based on your answer, here's a concise purpose line for 99-assets: \"Attachments: images and non-Markdown files\". Does this wording work for you?": "yes",
+    };
+    const response = await runChatQuery("update the manifest for the folders", async (args) => {
+      return answers[args.question] ?? null;
+    });
+
+    // The user's "yes" confirms the model's proposal — the QUOTED proposal
+    // is written, never the bare confirmation.
+    expect(response.clarifyProposal).not.toBeUndefined();
+    expect(response.clarifyProposal!.after).toContain("## 99-assets/ <!-- Attachments: images and non-Markdown files -->");
+    expect(response.clarifyProposal!.after).not.toContain("<!-- yes -->");
+  });
 });
 
 describe("no-tool-call parity — deterministic dialog on the chat surface", () => {
