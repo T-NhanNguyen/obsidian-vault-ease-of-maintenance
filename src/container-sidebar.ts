@@ -21,7 +21,7 @@ const TAB_LABELS: Record<ReviewTabId, string> = {
     pending: "Pending Review",
 };
 
-const EMPTY_STATE_TEXT = "No open tabs. Open Chat or run a cleanup or sort.";
+const EMPTY_STATE_TEXT = "No open tabs. Open Chat or run a cleanup, sort, or clarify.";
 const VIEW_NAME = "Vault Ease of Maintenance";
 
 interface ReviewViewState {

@@ -437,3 +437,83 @@ export function getCitationMap(): Record<number, number> {
   }
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// Clarify tool — ask the user a short, self-contained question when evidence
+// is ambiguous (low confidence, unknown folder purpose, missing destination).
+// The dialog driver registers an answer provider (the UI asker, the LLM loop
+// channel, …); the tool itself never writes — answers land only in the
+// caller's flow. A null answer (deadline / user skip / no provider) surfaces
+// as the NO_ANSWER:<deadline> marker so the caller can fall back.
+// ---------------------------------------------------------------------------
+
+export const CLARIFY_TOOL = {
+  name: "clarify",
+  description:
+    "Ask the user a short clarifying question when you need their input to " +
+    "continue — ambiguous evidence, an intent you cannot infer, a decision " +
+    "only the user can make. Make the question self-contained: include the " +
+    "context the user needs. Returns the user's answer verbatim, or a " +
+    "NO_ANSWER:<deadline> marker when the user does not answer. Use at most " +
+    "a few times per task.",
+  parameters: {
+    type: "object",
+    properties: {
+      question: {
+        type: "string",
+        description: "One clear question the user can answer in a few words.",
+      },
+      options: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional closed answer choices.",
+      },
+      context: {
+        type: "string",
+        description: "The context the user needs to answer. Do not rely on history.",
+      },
+      deadline: {
+        type: "string",
+        description: "ISO timestamp echoed in the NO_ANSWER marker when the user does not answer.",
+      },
+    },
+    required: ["question"],
+  },
+};
+
+export interface ClarifyArgs {
+  question: string;
+  options?: string[];
+  context?: string;
+  deadline?: string;
+}
+
+/** Returns the answer verbatim, or null when the user did not answer. */
+export type ClarifyAnswerProvider = (
+  args: ClarifyArgs,
+) => string | null | Promise<string | null>;
+
+let clarifyAnswerProvider: ClarifyAnswerProvider | null = null;
+
+export function setClarifyAnswerProvider(provider: ClarifyAnswerProvider | null): void {
+  clarifyAnswerProvider = provider;
+}
+
+export function resetClarifyAnswerProvider(): void {
+  clarifyAnswerProvider = null;
+}
+
+export async function clarify(args: Record<string, unknown>): Promise<string> {
+  const { question, options, context, deadline } = args as unknown as ClarifyArgs;
+  if (typeof question !== "string" || !question.trim()) {
+    return "Error: question must be a non-empty string";
+  }
+  if (!clarifyAnswerProvider) {
+    return `NO_ANSWER:${deadline || "unavailable"}`;
+  }
+  const answer = await clarifyAnswerProvider({ question, options, context, deadline });
+  if (answer == null) {
+    return `NO_ANSWER:${deadline || "unavailable"}`;
+  }
+  return answer;
+}

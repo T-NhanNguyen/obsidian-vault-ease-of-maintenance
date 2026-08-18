@@ -17,8 +17,12 @@ import { Tool } from "../../src/agent/llm";
 import {
   APPLY_EDITS_TOOL,
   CITE_SOURCE_TOOL,
+  CLARIFY_TOOL,
   applyEdits,
   citeSource,
+  clarify,
+  setClarifyAnswerProvider,
+  resetClarifyAnswerProvider,
   resetCitationTracker,
 } from "../../src/agent/tools";
 import { updateSettings, defaultSettings } from "../../src/config";
@@ -270,5 +274,70 @@ describe("getWikilinkEdges row casing (TEST-05)", () => {
     } finally {
       await db.close();
     }
+  });
+});
+
+describe("clarify tool (TEST-06)", () => {
+  afterAll(() => {
+    resetClarifyAnswerProvider();
+  });
+
+  it("rejects a missing or empty question", async () => {
+    await expect(clarify({})).resolves.toBe("Error: question must be a non-empty string");
+    await expect(clarify({ question: "   " })).resolves.toBe(
+      "Error: question must be a non-empty string",
+    );
+  });
+
+  it("returns the NO_ANSWER:<deadline> marker when no provider is registered", async () => {
+    resetClarifyAnswerProvider();
+    await expect(clarify({ question: "Where should this go?", deadline: "2030-01-01T00:00:00Z" }))
+      .resolves.toBe("NO_ANSWER:2030-01-01T00:00:00Z");
+    await expect(clarify({ question: "Where should this go?" }))
+      .resolves.toBe("NO_ANSWER:unavailable");
+  });
+
+  it("passes the answer through verbatim from the provider", async () => {
+    const seen: unknown[] = [];
+    setClarifyAnswerProvider((args) => {
+      seen.push(args);
+      return "  under 10_Stocks  ";
+    });
+    const result = await clarify({
+      question: "Where should this go?",
+      options: ["a", "b"],
+      context: "The vault has 3 folders.",
+      deadline: "2030-01-01T00:00:00Z",
+    });
+    // Verbatim — the tool never trims or rewrites the answer.
+    expect(result).toBe("  under 10_Stocks  ");
+    expect(seen).toEqual([{
+      question: "Where should this go?",
+      options: ["a", "b"],
+      context: "The vault has 3 folders.",
+      deadline: "2030-01-01T00:00:00Z",
+    }]);
+  });
+
+  it("turns a null provider answer into the NO_ANSWER marker", async () => {
+    setClarifyAnswerProvider(() => null);
+    await expect(clarify({ question: "q", deadline: "2030-01-01T00:00:00Z" }))
+      .resolves.toBe("NO_ANSWER:2030-01-01T00:00:00Z");
+  });
+
+  it("never writes — a clarify call leaves the vault untouched", async () => {
+    const vault = makeToolVault(BASE_NOTE);
+    const before = fs.readdirSync(vault.vaultDir).sort();
+    setClarifyAnswerProvider(() => "answer");
+    await clarify({ question: "Where should this go?" });
+    const after = fs.readdirSync(vault.vaultDir).sort();
+    expect(after).toEqual(before);
+    expect(tmpFilesIn(vault.vaultDir)).toEqual([]);
+  });
+
+  it("ships the wire schema with a required question", () => {
+    expect(CLARIFY_TOOL.name).toBe("clarify");
+    expect(CLARIFY_TOOL.parameters.required).toEqual(["question"]);
+    expect(CLARIFY_TOOL.parameters.properties.deadline).toBeDefined();
   });
 });

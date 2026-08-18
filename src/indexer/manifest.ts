@@ -15,7 +15,7 @@ function configuredManifestFilename(): string {
 }
 
 // Regex patterns
-const TOC_HEADER = /^(#{1,6})\s+(.+?)\s*(?:<!--\s*(.*?)\s*-->)?\s*$/;
+export const TOC_HEADER = /^(#{1,6})\s+(.+?)\s*(?:<!--\s*(.*?)\s*-->)?\s*$/;
 const FILE_ENTRY = /^\s{4,}(.+?)\s*(?:<!--\s*(.*?)\s*-->)?\s*$/;
 
 // Serializable shape of a ManifestEntry (folder tree node).

@@ -13,7 +13,8 @@ import { specKey } from "./types";
 import { renderCleanReview } from "./clean-review";
 import { renderSortReview } from "./sort-review";
 import { renderChatReview } from "./chat-review";
-import { closeChatSession } from "./agent/chat_session";
+import { renderClarifyReview } from "./clarify-review";
+import { closeChatSession, closeClarifySession } from "./agent/chat_session";
 
 const LOADING_LABEL = "Loading review…";
 
@@ -56,6 +57,8 @@ export class ReviewCore {
                 await renderCleanReview(this.host, spec);
             } else if (spec.kind === "sort") {
                 await renderSortReview(this.host, spec.result);
+            } else if (spec.kind === "clarify") {
+                renderClarifyReview(this.host, spec);
             } else {
                 renderChatReview(this.host, spec.query);
                 this.chatRendered = true;
@@ -74,6 +77,9 @@ export class ReviewCore {
             this.chatRendered = false;
             if (this.activeSpecKey === "chat") this.activeSpecKey = null;
         } else if (this.activeSpecKey !== "chat") {
+            // Clean/sort/clarify all share the pending tab; closing it clears
+            // the clarify dialog's Q&A session (clean/sort keep no session).
+            closeClarifySession();
             this.activeSpecKey = null;
         }
     }

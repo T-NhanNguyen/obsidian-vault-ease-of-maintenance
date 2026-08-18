@@ -10,6 +10,7 @@ import { LLMClient } from "./llm";
 import { parseIgnorePatterns, pathMatchesPatterns } from "./engine";
 import * as toolImpl from "./tools";
 import { TocReader } from "../indexer/manifest";
+import { MANIFEST_H1 } from "./clarify";
 import { Indexer } from "../indexer/indexer";
 import { ChatReportLlm } from "../indexer/community_reports";
 import { DatabaseManager } from "../indexer/db";
@@ -143,7 +144,7 @@ export async function generateManifest(vaultPath: string): Promise<string> {
   }
 
   // Render §5.1 manifest
-  const lines = ["# vault <!-- Auto-generated from GraphRAG index — review and edit -->"];
+  const lines = [MANIFEST_H1];
   for (const folder of sortedFolders) {
     const folderDepth = folder.split(path.sep).length - 1;
     const parenMatch = folder.match(/\(([^)]+)\)/);

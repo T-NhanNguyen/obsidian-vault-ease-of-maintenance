@@ -2,6 +2,8 @@
 // Path C: no server — every review spec carries its data in memory.
 // The two containers (modal + sidebar) render the same specs through ReviewCore.
 
+import type { ClarifyDialogChannel } from "./agent/clarify";
+
 export interface CleanProposalPayload {
     filePath: string;
     vaultPath: string;
@@ -36,7 +38,15 @@ export interface ChatReviewSpec {
     readonly query: (question: string) => Promise<ChatQueryResponse>;
 }
 
-export type ReviewSpec = CleanReviewSpec | SortReviewSpec | ChatReviewSpec;
+export interface ClarifyReviewSpec {
+    readonly kind: "clarify";
+    readonly id: string;
+    /** Runs the whole dialog: ask questions through the channel, show the
+     * proposal diff, and write the manifest only after the user accepts. */
+    readonly start: (channel: ClarifyDialogChannel) => Promise<void>;
+}
+
+export type ReviewSpec = CleanReviewSpec | SortReviewSpec | ChatReviewSpec | ClarifyReviewSpec;
 
 export function specKey(spec: ReviewSpec): string {
     switch (spec.kind) {
@@ -44,6 +54,8 @@ export function specKey(spec: ReviewSpec): string {
             return `clean:${spec.id}`;
         case "sort":
             return `sort:${spec.id}`;
+        case "clarify":
+            return `clarify:${spec.id}`;
         case "chat":
             return "chat";
     }
