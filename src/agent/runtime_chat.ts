@@ -3,6 +3,7 @@
 // build orchestrators.
 
 import { settings, thinkingEnabledFor } from "../config";
+import { errorMessage } from "../errors";
 import { LLMClient, Tool } from "./llm";
 import { reconstructAnswer } from "./chat_context";
 import { detectToolCallSupport } from "./capability";
@@ -170,8 +171,12 @@ async function runChatQueryAgentic(
     answer = reconstructAnswer(rawHistory.slice(turnStart));
     appendChatTurn(settings.vaultPath, "user", question);
     appendChatTurn(settings.vaultPath, "assistant", answer);
-  } catch {
-    answer = "[Synthesis unavailable — LLM error]";
+  } catch (e) {
+    // Never swallow the real failure — the user must see WHY synthesis
+    // failed (bad key, unreachable server, model not found) to act on it;
+    // the same reason is what the settings "Test connection" button probes.
+    console.warn(`[chat] Synthesis unavailable — LLM error: ${errorMessage(e)}`);
+    answer = `[Synthesis unavailable — LLM error: ${errorMessage(e)}]`;
   }
 
   return { answer, results: getChatSearchResults(), citationMap: getCitationMap() };
@@ -216,8 +221,10 @@ async function runChatQueryFallback(
     answer = response.trim() || "[The agent produced no answer text.]";
     appendChatTurn(settings.vaultPath, "user", question);
     appendChatTurn(settings.vaultPath, "assistant", answer);
-  } catch {
-    answer = "[Synthesis unavailable — LLM error]";
+  } catch (e) {
+    // Same contract as the agentic path: surface the reason, don't swallow.
+    console.warn(`[chat] Synthesis unavailable — LLM error: ${errorMessage(e)}`);
+    answer = `[Synthesis unavailable — LLM error: ${errorMessage(e)}]`;
   }
 
   return { answer, results: getChatSearchResults(), citationMap: {} };
