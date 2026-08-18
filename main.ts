@@ -274,12 +274,7 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
     const setting = new Setting(containerEl).setName(meta.name).setDesc(meta.desc);
 
     if (meta.kind === "button") {
-      setting.addButton((button) => {
-        button.setButtonText(meta.buttonText);
-        button.onClick(() => {
-          void this.testConnection(button.buttonEl, meta.buttonText);
-        });
-      });
+      this.renderButtonSetting(setting, meta);
       return;
     }
 
@@ -340,12 +335,19 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       };
     }
     if (meta.kind === "button") {
-      // SettingDefinitionAction — a clickable row, no stored value.
+      // SettingDefinitionRender — a REAL right-aligned push button. The
+      // SettingDefinitionAction shape renders as a link-style clickable row
+      // (reads as a hyperlink, not a button), so the declarative path mounts
+      // the same Obsidian Setting + addButton the imperative path uses — one
+      // shared renderer, identical look in both settings surfaces.
       return {
         ...base,
-        action: (el) => {
-          const buttonEl = el.querySelector("button");
-          void this.testConnection(buttonEl, meta.buttonText);
+        render: (setting) => {
+          // Name + desc set explicitly (idempotent) — guarantees the standard
+          // white setting header + description regardless of what the
+          // framework pre-applied.
+          setting.setName(meta.name).setDesc(meta.desc);
+          this.renderButtonSetting(setting, meta);
         },
       };
     }
@@ -357,6 +359,20 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         placeholder: meta.placeholder,
       },
     };
+  }
+
+  // Shared button-row renderer for BOTH settings paths: name + desc come
+  // from the Setting row (standard white header + description); this appends
+  // the right-aligned push button and wires it to testConnection, which
+  // disables it (greyed out) while the probe is in flight — blocking spam
+  // clicks until the response returns.
+  private renderButtonSetting(setting: Setting, meta: SettingButtonMeta): void {
+    setting.addButton((button) => {
+      button.setButtonText(meta.buttonText);
+      button.onClick(() => {
+        void this.testConnection(button.buttonEl, meta.buttonText);
+      });
+    });
   }
 
   // "Test connection" button handler — runs the shared probe
