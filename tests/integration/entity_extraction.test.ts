@@ -22,7 +22,7 @@ import * as os from "os";
 import * as path from "path";
 import initSqlJs from "sql.js";
 import { FakeEmbedder } from "../fixtures/fake_embedder";
-import { Settings } from "../../src/config";
+import { Settings, defaultSettings } from "../../src/config";
 import { Indexer } from "../../src/indexer/indexer";
 import { DatabaseManager } from "../../src/indexer/db";
 import { entityId } from "../../src/indexer/graph";
@@ -189,6 +189,7 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
     },
     reports: { contextCapTokens: 3000 },
     extraction: { contextCapTokens: 3000 },
+    comprehension: defaultSettings().comprehension,
   };
 }
 

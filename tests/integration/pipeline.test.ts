@@ -7,7 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import initSqlJs from "sql.js";
 import { FakeEmbedder } from "../fixtures/fake_embedder";
-import { Settings } from "../../src/config";
+import { Settings, defaultSettings } from "../../src/config";
 import { Indexer } from "../../src/indexer/indexer";
 
 // Path to the sample vault fixture (original repo, sibling directory)
@@ -105,6 +105,7 @@ function makeSettings(
     extraction: {
       contextCapTokens: 3000,
     },
+    comprehension: defaultSettings().comprehension,
   };
   return {
     ...base,

@@ -14,7 +14,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { FakeEmbedder } from "../fixtures/fake_embedder";
-import { Settings } from "../../src/config";
+import { Settings, defaultSettings } from "../../src/config";
 import { Indexer } from "../../src/indexer/indexer";
 import { DatabaseManager } from "../../src/indexer/db";
 
@@ -73,6 +73,7 @@ function makeSettings(vaultPath: string, dbPath: string): Settings {
     },
     reports: { contextCapTokens: 3000 },
     extraction: { contextCapTokens: 3000 },
+    comprehension: defaultSettings().comprehension,
   };
 }
 

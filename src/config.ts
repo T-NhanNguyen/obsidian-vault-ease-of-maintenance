@@ -75,6 +75,44 @@ export interface ExtractionSettings {
   contextCapTokens: number;
 }
 
+// Vault-comprehension tuning — config.yaml `comprehension:` section. Drives
+// the read-the-vault-like-a-book pipeline (src/comprehension/ — batch skim,
+// assumption ledger, state machine). YAML-only like graph:/reports:/extraction:
+// (advanced tuning; Settings tab untouched).
+export interface ComprehensionSettings {
+  /** Total excerpt budget (words) shared by the sampled regular notes.
+   * (skim.ts). */
+  tokenBudget: number;
+  /** Full excerpt for root notes (README etc.). */
+  rootExcerptWords: number;
+  /** Full excerpt for MOC notes. */
+  mocExcerptWords: number;
+  /** Per-file cap for regular notes (adaptive: budget / sample count). */
+  regularExcerptWords: number;
+  /** Target sample size across all regular notes (proportional per folder). */
+  sampleTargetFiles: number;
+  /** Top-k snippets retrieved per verify question (graph_search hybridQuery). */
+  verifyTopK: number;
+  /** Verify questions asked per round (2–4; one multi-query batch). */
+  verifyQuestionsPerRound: number;
+  /** Hard cap on LLM tool calls per comprehension run — rounds vary in cost,
+   * tool calls are the real constraint. */
+  toolCallBudget: number;
+  /** Soft threshold: hypotheses at/above it can make status conflicted. */
+  softThreshold: number;
+  /** Score at/above which the leading hypothesis confirms the run. */
+  confirmThreshold: number;
+  /** Score below which a verified-but-weak run is low_confidence. */
+  lowConfidenceThreshold: number;
+  /** Minimum sampled-coverage fraction before a run may confirm. */
+  minCoverage: number;
+  /** User-supplied hot-topic keywords (comma-separated in config.yaml): a
+   * hit in a newly sampled file fires an optional clarification. */
+  hotTopics: string[];
+  /** Max folders/notes the progressive-deepening pass re-reads deeper. */
+  deepenMaxFolders: number;
+}
+
 export interface AgentSettings {
   model: string;
   // Per-feature reasoning gate (config.yaml `agent.thinking.*`). Reasoning
@@ -120,6 +158,7 @@ export interface Settings {
   graph: GraphSettings;
   reports: ReportsSettings;
   extraction: ExtractionSettings;
+  comprehension: ComprehensionSettings;
 }
 
 export function defaultSettings(): Settings {
@@ -174,6 +213,22 @@ export function defaultSettings(): Settings {
     extraction: {
       contextCapTokens: 3000,
     },
+    comprehension: {
+      tokenBudget: 4000,
+      rootExcerptWords: 100,
+      mocExcerptWords: 100,
+      regularExcerptWords: 40,
+      sampleTargetFiles: 20,
+      verifyTopK: 3,
+      verifyQuestionsPerRound: 3,
+      toolCallBudget: 60,
+      softThreshold: 0.7,
+      confirmThreshold: 0.8,
+      lowConfidenceThreshold: 0.4,
+      minCoverage: 0.6,
+      hotTopics: [],
+      deepenMaxFolders: 3,
+    },
   };
 }
 
@@ -211,6 +266,9 @@ export function updateSettings(partial: Partial<Settings>): void {
   }
   if (partial.extraction) {
     settings.extraction = { ...settings.extraction, ...partial.extraction };
+  }
+  if (partial.comprehension) {
+    settings.comprehension = { ...settings.comprehension, ...partial.comprehension };
   }
 }
 

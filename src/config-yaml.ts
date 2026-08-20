@@ -40,6 +40,21 @@ export interface YamlPluginSettings {
   graphInferredMaxEdgesPerSection?: number;
   reportsContextCapTokens?: number;
   extractionContextCapTokens?: number;
+  comprehensionTokenBudget?: number;
+  comprehensionRootExcerptWords?: number;
+  comprehensionMocExcerptWords?: number;
+  comprehensionRegularExcerptWords?: number;
+  comprehensionSampleTargetFiles?: number;
+  comprehensionVerifyTopK?: number;
+  comprehensionVerifyQuestionsPerRound?: number;
+  comprehensionToolCallBudget?: number;
+  comprehensionSoftThreshold?: number;
+  comprehensionConfirmThreshold?: number;
+  comprehensionLowConfidenceThreshold?: number;
+  comprehensionMinCoverage?: number;
+  /** Comma-separated hot-topic keywords (the parser is scalar-only). */
+  comprehensionHotTopics?: string;
+  comprehensionDeepenMaxFolders?: number;
 }
 
 interface YamlSection {
@@ -107,6 +122,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
   const graph = tree["graph"] as YamlSection | undefined;
   const reports = tree["reports"] as YamlSection | undefined;
   const extraction = tree["extraction"] as YamlSection | undefined;
+  const comprehension = tree["comprehension"] as YamlSection | undefined;
 
   const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
   const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
@@ -135,6 +151,20 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     graphInferredMaxEdgesPerSection: num(graph?.["inferred_max_edges_per_section"]),
     reportsContextCapTokens: num(reports?.["context_cap_tokens"]),
     extractionContextCapTokens: num(extraction?.["context_cap_tokens"]),
+    comprehensionTokenBudget: num(comprehension?.["token_budget"]),
+    comprehensionRootExcerptWords: num(comprehension?.["root_excerpt_words"]),
+    comprehensionMocExcerptWords: num(comprehension?.["moc_excerpt_words"]),
+    comprehensionRegularExcerptWords: num(comprehension?.["regular_excerpt_words"]),
+    comprehensionSampleTargetFiles: num(comprehension?.["sample_target_files"]),
+    comprehensionVerifyTopK: num(comprehension?.["verify_top_k"]),
+    comprehensionVerifyQuestionsPerRound: num(comprehension?.["verify_questions_per_round"]),
+    comprehensionToolCallBudget: num(comprehension?.["tool_call_budget"]),
+    comprehensionSoftThreshold: num(comprehension?.["soft_threshold"]),
+    comprehensionConfirmThreshold: num(comprehension?.["confirm_threshold"]),
+    comprehensionLowConfidenceThreshold: num(comprehension?.["low_confidence_threshold"]),
+    comprehensionMinCoverage: num(comprehension?.["min_coverage"]),
+    comprehensionHotTopics: str(comprehension?.["hot_topics"]),
+    comprehensionDeepenMaxFolders: num(comprehension?.["deepen_max_folders"]),
   };
 }
 

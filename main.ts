@@ -18,6 +18,7 @@ import {
   runTriage,
   runBuild,
   runChatQuery,
+  runComprehension,
   ProposedChange,
 } from "./src/agent/runtime";
 import { VaultIO } from "./src/io/vault_io";
@@ -72,6 +73,24 @@ interface PluginSettings {
   graphInferredMaxEdgesPerSection: number;
   reportsContextCapTokens: number;
   extractionContextCapTokens: number;
+  // Vault-comprehension tuning — config.yaml `comprehension:` section
+  // (single source of truth; deliberately NOT in the Settings tab —
+  // advanced tuning). hot_topics is comma-separated in YAML (the parser is
+  // scalar-only) and split into an array when applied.
+  comprehensionTokenBudget: number;
+  comprehensionRootExcerptWords: number;
+  comprehensionMocExcerptWords: number;
+  comprehensionRegularExcerptWords: number;
+  comprehensionSampleTargetFiles: number;
+  comprehensionVerifyTopK: number;
+  comprehensionVerifyQuestionsPerRound: number;
+  comprehensionToolCallBudget: number;
+  comprehensionSoftThreshold: number;
+  comprehensionConfirmThreshold: number;
+  comprehensionLowConfidenceThreshold: number;
+  comprehensionMinCoverage: number;
+  comprehensionHotTopics: string;
+  comprehensionDeepenMaxFolders: number;
 }
 
 const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -98,6 +117,20 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   graphInferredMaxEdgesPerSection: 3,
   reportsContextCapTokens: 3000,
   extractionContextCapTokens: 3000,
+  comprehensionTokenBudget: 4000,
+  comprehensionRootExcerptWords: 100,
+  comprehensionMocExcerptWords: 100,
+  comprehensionRegularExcerptWords: 40,
+  comprehensionSampleTargetFiles: 20,
+  comprehensionVerifyTopK: 3,
+  comprehensionVerifyQuestionsPerRound: 3,
+  comprehensionToolCallBudget: 60,
+  comprehensionSoftThreshold: 0.7,
+  comprehensionConfirmThreshold: 0.8,
+  comprehensionLowConfidenceThreshold: 0.4,
+  comprehensionMinCoverage: 0.6,
+  comprehensionHotTopics: "",
+  comprehensionDeepenMaxFolders: 3,
 };
 
 // Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
@@ -454,6 +487,25 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       extraction: {
         contextCapTokens: s.extractionContextCapTokens,
       },
+      comprehension: {
+        tokenBudget: s.comprehensionTokenBudget,
+        rootExcerptWords: s.comprehensionRootExcerptWords,
+        mocExcerptWords: s.comprehensionMocExcerptWords,
+        regularExcerptWords: s.comprehensionRegularExcerptWords,
+        sampleTargetFiles: s.comprehensionSampleTargetFiles,
+        verifyTopK: s.comprehensionVerifyTopK,
+        verifyQuestionsPerRound: s.comprehensionVerifyQuestionsPerRound,
+        toolCallBudget: s.comprehensionToolCallBudget,
+        softThreshold: s.comprehensionSoftThreshold,
+        confirmThreshold: s.comprehensionConfirmThreshold,
+        lowConfidenceThreshold: s.comprehensionLowConfidenceThreshold,
+        minCoverage: s.comprehensionMinCoverage,
+        hotTopics: (s.comprehensionHotTopics || "")
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean),
+        deepenMaxFolders: s.comprehensionDeepenMaxFolders,
+      },
     });
   }
 }
@@ -573,6 +625,16 @@ export default class VaultMaintenancePlugin extends Plugin {
       id: "chat-query",
       name: "Chat with your vault",
       callback: () => this.handleChat(),
+    });
+
+    // Vault comprehension — reads the vault like a book (skim → hypotheses →
+    // verify → clarify → one-page summary card), hosted on the same chat
+    // surface so mandatory clarifications flow through the in-flight answer
+    // mode.
+    this.addCommand({
+      id: "understand-vault",
+      name: "Understand vault (read it like a book)",
+      callback: () => this.handleComprehension(),
     });
 
     // Ribbon entry point — same action as the command palette.
@@ -784,6 +846,14 @@ export default class VaultMaintenancePlugin extends Plugin {
     const spec: ReviewSpec = {
       kind: "chat",
       query: runChatQuery,
+    };
+    this.openReview(spec);
+  }
+
+  handleComprehension(): void {
+    const spec: ReviewSpec = {
+      kind: "chat",
+      query: runComprehension,
     };
     this.openReview(spec);
   }

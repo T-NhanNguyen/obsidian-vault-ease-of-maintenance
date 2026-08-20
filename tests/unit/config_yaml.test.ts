@@ -72,6 +72,43 @@ describe("parseConfigYaml", () => {
     expect(cfg.ignorePatterns).toBe("");
   });
 
+  it("maps the comprehension tuning section (hot_topics is scalar-only)", () => {
+    const cfg = parseConfigYaml(`
+comprehension:
+  token_budget: 2000
+  root_excerpt_words: 50
+  moc_excerpt_words: 60
+  regular_excerpt_words: 20
+  sample_target_files: 15
+  verify_top_k: 5
+  verify_questions_per_round: 4
+  tool_call_budget: 40
+  soft_threshold: 0.6
+  confirm_threshold: 0.75
+  low_confidence_threshold: 0.3
+  min_coverage: 0.5
+  hot_topics: "colmac, recipes"
+  deepen_max_folders: 2
+`);
+    expect(cfg.comprehensionTokenBudget).toBe(2000);
+    expect(cfg.comprehensionRootExcerptWords).toBe(50);
+    expect(cfg.comprehensionMocExcerptWords).toBe(60);
+    expect(cfg.comprehensionRegularExcerptWords).toBe(20);
+    expect(cfg.comprehensionSampleTargetFiles).toBe(15);
+    expect(cfg.comprehensionVerifyTopK).toBe(5);
+    expect(cfg.comprehensionVerifyQuestionsPerRound).toBe(4);
+    expect(cfg.comprehensionToolCallBudget).toBe(40);
+    expect(cfg.comprehensionSoftThreshold).toBe(0.6);
+    expect(cfg.comprehensionConfirmThreshold).toBe(0.75);
+    expect(cfg.comprehensionLowConfidenceThreshold).toBe(0.3);
+    expect(cfg.comprehensionMinCoverage).toBe(0.5);
+    expect(cfg.comprehensionHotTopics).toBe("colmac, recipes");
+    expect(cfg.comprehensionDeepenMaxFolders).toBe(2);
+
+    // Absent keys stay undefined — code defaults apply.
+    expect(parseConfigYaml("").comprehensionTokenBudget).toBe(undefined);
+  });
+
   it("maps the query, graph, and reports tuning sections", () => {
     const cfg = parseConfigYaml(CONFIG_FIXTURE);
     expect(cfg.queryTopK).toBe(5);

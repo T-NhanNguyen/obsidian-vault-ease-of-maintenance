@@ -110,6 +110,7 @@ Obsidian notifies you).
 | Clean current note | Run the cleanup agent on the open note. |
 | Sort inbox | Run the triage agent on the inbox. |
 | Chat with your vault | Ask a question about the vault. The chat agent can ask clarifying questions inline (the `clarify` tool) and, for manifest-review requests, propose a manifest update with a diff you accept or reject. |
+| Understand vault (read it like a book) | Run the vault-comprehension pipeline: skim the vault like flipping through pages, form and score hypotheses in a persistent ledger, verify them against the index, ask for clarification only on deterministic triggers, and write a one-page summary card (`.note-maintainer/vault-summary.md`) that later sessions load instantly. |
 
 ## Plugin Settings
 

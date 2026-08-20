@@ -24,7 +24,7 @@ import { EmbeddingCache } from "../../src/indexer/embedding_cache";
 import type { DbChannel, DbFileIO, DbHost } from "../../src/indexer/db_host";
 import type { DbMethodMap, DbMethodName } from "../../src/indexer/db_worker/protocol";
 import { DbWorkerCore } from "../../src/indexer/db_worker/worker_core";
-import { Settings } from "../../src/config";
+import { Settings, defaultSettings } from "../../src/config";
 
 // ---------------------------------------------------------------------------
 // Harness — MemIO host (in-memory DB + cache sidecar), real-fs vault files
@@ -134,6 +134,7 @@ function makeSettings(vaultPath: string): Settings {
     },
     reports: { contextCapTokens: 3000 },
     extraction: { contextCapTokens: 3000 },
+    comprehension: defaultSettings().comprehension,
   };
 }
 

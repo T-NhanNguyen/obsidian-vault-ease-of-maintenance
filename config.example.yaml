@@ -94,6 +94,28 @@ reports:
 extraction:
   context_cap_tokens: 3000
 
+# Vault-comprehension tuning — the read-the-vault-like-a-book pipeline
+# (batch skim, assumption ledger, status machine; src/comprehension/).
+# Deliberately NOT in the Settings tab (advanced tuning). All excerpt sizes
+# are WORD counts (deterministic token proxy). hot_topics is a
+# comma-separated list — a hit in a newly sampled file fires an optional
+# clarification.
+comprehension:
+  token_budget: 4000              # total excerpt budget shared by sampled regular notes.
+  root_excerpt_words: 100         # full excerpt for root notes (README etc.).
+  moc_excerpt_words: 100          # full excerpt for MOC notes.
+  regular_excerpt_words: 40       # per-file cap (adaptive: budget / sample count).
+  sample_target_files: 20         # target sample across regular notes (proportional per folder).
+  verify_top_k: 3                 # snippets retrieved per verify question.
+  verify_questions_per_round: 3   # verify questions asked per round (2–4, one batch).
+  tool_call_budget: 60            # hard cap on LLM tool calls per run (not rounds).
+  soft_threshold: 0.7             # hypotheses at/above it can make status conflicted.
+  confirm_threshold: 0.8          # leading-hypothesis score that confirms the run.
+  low_confidence_threshold: 0.4   # verified-but-below → low_confidence.
+  min_coverage: 0.6               # minimum sampled-coverage fraction before confirming.
+  hot_topics: ""                  # comma-separated keywords → optional clarification.
+  deepen_max_folders: 3           # folders the progressive-deepening pass re-reads.
+
 index:
   warn_mb: 256                # warning threshold for the index file size (MB). sql.js
                               # holds ~10× the file size in RAM while building — warn
