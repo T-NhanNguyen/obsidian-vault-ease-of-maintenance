@@ -57,7 +57,7 @@ export class ReviewCore {
             } else if (spec.kind === "sort") {
                 await renderSortReview(this.host, spec.result);
             } else {
-                renderChatReview(this.host, spec.query);
+                renderChatReview(this.host, spec.query, spec.initialQuestion);
                 this.chatRendered = true;
             }
         } catch (error) {

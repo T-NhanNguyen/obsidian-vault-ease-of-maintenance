@@ -19,6 +19,7 @@ import {
   runBuild,
   runChatQuery,
   runComprehension,
+  DEFAULT_COMPREHENSION_QUESTION,
   ProposedChange,
 } from "./src/agent/runtime";
 import { VaultIO } from "./src/io/vault_io";
@@ -488,23 +489,23 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
         contextCapTokens: s.extractionContextCapTokens,
       },
       comprehension: {
-        tokenBudget: s.comprehensionTokenBudget,
-        rootExcerptWords: s.comprehensionRootExcerptWords,
-        mocExcerptWords: s.comprehensionMocExcerptWords,
-        regularExcerptWords: s.comprehensionRegularExcerptWords,
-        sampleTargetFiles: s.comprehensionSampleTargetFiles,
-        verifyTopK: s.comprehensionVerifyTopK,
-        verifyQuestionsPerRound: s.comprehensionVerifyQuestionsPerRound,
-        toolCallBudget: s.comprehensionToolCallBudget,
-        softThreshold: s.comprehensionSoftThreshold,
-        confirmThreshold: s.comprehensionConfirmThreshold,
-        lowConfidenceThreshold: s.comprehensionLowConfidenceThreshold,
-        minCoverage: s.comprehensionMinCoverage,
+        tokenBudget: s.comprehensionTokenBudget ?? settings.comprehension.tokenBudget,
+        rootExcerptWords: s.comprehensionRootExcerptWords ?? settings.comprehension.rootExcerptWords,
+        mocExcerptWords: s.comprehensionMocExcerptWords ?? settings.comprehension.mocExcerptWords,
+        regularExcerptWords: s.comprehensionRegularExcerptWords ?? settings.comprehension.regularExcerptWords,
+        sampleTargetFiles: s.comprehensionSampleTargetFiles ?? settings.comprehension.sampleTargetFiles,
+        verifyTopK: s.comprehensionVerifyTopK ?? settings.comprehension.verifyTopK,
+        verifyQuestionsPerRound: s.comprehensionVerifyQuestionsPerRound ?? settings.comprehension.verifyQuestionsPerRound,
+        toolCallBudget: s.comprehensionToolCallBudget ?? settings.comprehension.toolCallBudget,
+        softThreshold: s.comprehensionSoftThreshold ?? settings.comprehension.softThreshold,
+        confirmThreshold: s.comprehensionConfirmThreshold ?? settings.comprehension.confirmThreshold,
+        lowConfidenceThreshold: s.comprehensionLowConfidenceThreshold ?? settings.comprehension.lowConfidenceThreshold,
+        minCoverage: s.comprehensionMinCoverage ?? settings.comprehension.minCoverage,
         hotTopics: (s.comprehensionHotTopics || "")
           .split(",")
           .map((t) => t.trim())
           .filter(Boolean),
-        deepenMaxFolders: s.comprehensionDeepenMaxFolders,
+        deepenMaxFolders: s.comprehensionDeepenMaxFolders ?? settings.comprehension.deepenMaxFolders,
       },
     });
   }
@@ -854,6 +855,7 @@ export default class VaultMaintenancePlugin extends Plugin {
     const spec: ReviewSpec = {
       kind: "chat",
       query: runComprehension,
+      initialQuestion: DEFAULT_COMPREHENSION_QUESTION,
     };
     this.openReview(spec);
   }

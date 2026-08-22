@@ -28,7 +28,8 @@ const REJECT_BUTTON_LABEL = "Reject";
 
 export function renderChatReview(
     host: ReviewHost,
-    query: (question: string, ask?: ClarifyAnswerProvider) => Promise<ChatQueryResponse>
+    query: (question: string, ask?: ClarifyAnswerProvider) => Promise<ChatQueryResponse>,
+    initialQuestion?: string,
 ): void {
     const container = host.contentEl;
     container.empty();
@@ -97,6 +98,13 @@ export function renderChatReview(
                 };
             });
         });
+
+    // Auto-run: a command may hand the pane an initial question (the
+    // "Understand vault" command starts the pipeline immediately).
+    if (initialQuestion) {
+        input.value = initialQuestion;
+        window.setTimeout(() => submit(), 0);
+    }
 }
 
 async function runQuery(

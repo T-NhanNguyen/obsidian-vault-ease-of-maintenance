@@ -76,7 +76,13 @@ interface ChatCompletionResponse {
     finish_reason?: string;
   }>;
   usage?: ChatUsage;
+  /** Server-side error envelope (local LLM servers) — no choices present. */
+  error?: { message?: string };
 }
+
+/** Errors that must NOT be retried: retrying a prefill-memory rejection
+ * re-peaks memory on every attempt (R2.6). */
+const MEMORY_REJECTION_RE = /prefill|kv_len|context too large|safety cap|memory/i;
 
 interface ChatUsage {
   prompt_tokens?: number;
@@ -246,8 +252,14 @@ async function postWithRetry(
 
       return parseResponse(result.body as ChatCompletionResponse);
     } catch (e) {
+      const message = errorMessage(e);
+      if (MEMORY_REJECTION_RE.test(message)) {
+        // Prefill/memory rejection — throw immediately, never retry (each
+        // attempt would re-prefill the same oversized context).
+        throw e;
+      }
       const delay = Math.pow(DEFAULT_BACKOFF_BASE, attempt) * 2;
-      console.error(`${clientLabel}: error on attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES}: ${errorMessage(e)}`);
+      console.error(`${clientLabel}: error on attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES}: ${message}`);
       if (attempt === DEFAULT_MAX_RETRIES - 1) throw e;
       await sleep(delay * 1000);
     }
@@ -265,6 +277,14 @@ function sleep(ms: number): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function parseResponse(data: ChatCompletionResponse): ChatResponse {
+  if (data && typeof data === "object" && data.error) {
+    // The server answered with an error envelope — surface its message
+    // verbatim instead of mislabeling it as a malformed response.
+    const message = typeof data.error.message === "string" ? data.error.message : "";
+    throw new Error(
+      `LLM server error: ${message || JSON.stringify(data.error).slice(0, 200)}`,
+    );
+  }
   if (!data || typeof data !== "object" || !Array.isArray(data.choices) || !data.choices[0]) {
     // Surface what the server ACTUALLY returned — "missing choices" is
     // usually a local-server template/error page, not a plugin fault.

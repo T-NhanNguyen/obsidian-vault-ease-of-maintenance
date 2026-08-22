@@ -79,3 +79,53 @@ describe("thinking gate payload", () => {
     expect(lastPayload().chat_template_kwargs).toEqual({ enable_thinking: false });
   });
 });
+
+describe("server error envelope + retry classification (R2.6)", () => {
+  beforeEach(() => {
+    vi.mocked(postJsonViaRequestUrl).mockClear();
+  });
+
+  it("surfaces the server error message and never retries a memory rejection", async () => {
+    vi.mocked(postJsonViaRequestUrl).mockResolvedValue({
+      status: 200,
+      ok: true,
+      body: {
+        error: {
+          message:
+            "oMLX prefill memory guard rejected this prompt: Prefill context too large " +
+            "for available memory (preflight safety guard, kv_len=18400): predicted peak " +
+            "would require ~28.20 GB ... prefill safety cap is 28.12 GB",
+        },
+      },
+    });
+
+    const client = getLlmClient("local", "m", "k", "http://127.0.0.1:8000/v1", false);
+    const err = await client
+      .chatCompletion("m", [{ role: "user", content: "hi" }])
+      .then(() => null, (e: unknown) => e);
+
+    expect(String((err as Error).message)).toContain("LLM server error: oMLX prefill memory guard");
+    expect(String((err as Error).message)).not.toContain("Malformed LLM response");
+    // Exactly one attempt — retrying a memory rejection re-peaks memory.
+    expect(vi.mocked(postJsonViaRequestUrl).mock.calls.length).toBe(1);
+  });
+
+  it("still retries non-memory server errors (behavior preserved)", async () => {
+    vi.mocked(postJsonViaRequestUrl).mockResolvedValue({
+      status: 200,
+      ok: true,
+      body: { error: { message: "upstream rate limited" } },
+    });
+    // sleep() uses window.setTimeout; shim for the node test env.
+    (globalThis as unknown as { window: unknown }).window = globalThis;
+    vi.useFakeTimers();
+
+    const client = getLlmClient("local", "m", "k", "http://127.0.0.1:8000/v1", false);
+    const p = client.chatCompletion("m", [{ role: "user", content: "hi" }]);
+    const rejection = expect(p).rejects.toThrow(/LLM server error: upstream rate limited/);
+    await vi.advanceTimersByTimeAsync(10000);
+    await rejection;
+    expect(vi.mocked(postJsonViaRequestUrl).mock.calls.length).toBe(3); // DEFAULT_MAX_RETRIES
+    vi.useRealTimers();
+  });
+});

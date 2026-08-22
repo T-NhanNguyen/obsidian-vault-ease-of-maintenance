@@ -235,40 +235,57 @@ export function defaultSettings(): Settings {
 // Global mutable settings — set once at plugin load, then read everywhere
 export let settings: Settings = defaultSettings();
 
+/** Merge a partial into a full object, ignoring keys whose new value is
+ * `undefined` — a missing scalar must never clobber an existing default
+ * (R2.7). Partial settings from YAML/data.json routinely omit keys. */
+function definedMerge<T extends object>(target: T, partial: Partial<T>): T {
+  const merged: T = { ...target };
+  for (const key of Object.keys(partial) as (keyof T)[]) {
+    const value = partial[key];
+    if (value !== undefined) {
+      (merged as Record<string, unknown>)[key as string] = value;
+    }
+  }
+  return merged;
+}
+
 export function updateSettings(partial: Partial<Settings>): void {
+  // Capture the previous sections BEFORE the shallow merge — after it,
+  // settings.<section> IS partial.<section> (undefined keys included).
+  const prev = settings;
   settings = { ...settings, ...partial };
   if (partial.api) {
-    settings.api = { ...settings.api, ...partial.api };
+    settings.api = definedMerge(prev.api, partial.api);
   }
   if (partial.embedding) {
-    settings.embedding = { ...settings.embedding, ...partial.embedding };
+    settings.embedding = definedMerge(prev.embedding, partial.embedding);
   }
   if (partial.manifest) {
-    settings.manifest = { ...settings.manifest, ...partial.manifest };
+    settings.manifest = definedMerge(prev.manifest, partial.manifest);
   }
   if (partial.query) {
-    settings.query = { ...settings.query, ...partial.query };
+    settings.query = definedMerge(prev.query, partial.query);
   }
   if (partial.agent) {
-    settings.agent = { ...settings.agent, ...partial.agent };
+    settings.agent = definedMerge(prev.agent, partial.agent);
   }
   if (partial.preview) {
-    settings.preview = { ...settings.preview, ...partial.preview };
+    settings.preview = definedMerge(prev.preview, partial.preview);
   }
   if (partial.index) {
-    settings.index = { ...settings.index, ...partial.index };
+    settings.index = definedMerge(prev.index, partial.index);
   }
   if (partial.graph) {
-    settings.graph = { ...settings.graph, ...partial.graph };
+    settings.graph = definedMerge(prev.graph, partial.graph);
   }
   if (partial.reports) {
-    settings.reports = { ...settings.reports, ...partial.reports };
+    settings.reports = definedMerge(prev.reports, partial.reports);
   }
   if (partial.extraction) {
-    settings.extraction = { ...settings.extraction, ...partial.extraction };
+    settings.extraction = definedMerge(prev.extraction, partial.extraction);
   }
   if (partial.comprehension) {
-    settings.comprehension = { ...settings.comprehension, ...partial.comprehension };
+    settings.comprehension = definedMerge(prev.comprehension, partial.comprehension);
   }
 }
 

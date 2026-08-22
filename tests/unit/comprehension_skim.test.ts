@@ -333,7 +333,7 @@ describe("skim — report shape", () => {
     expect(byDir.get("")!.fileCount).toBe(1);
   });
 
-  it("marks unsampled regular notes with empty excerpts and no outline", () => {
+  it("drops unsampled regular notes from the report while keeping their folder stats (R2.1)", () => {
     const files: Record<string, string> = {};
     for (let i = 0; i < 20; i++) files[`a/f${String(i).padStart(2, "0")}.md`] = note(`f${i}`);
     const vault = makeVault(files);
@@ -341,10 +341,12 @@ describe("skim — report shape", () => {
       vaultPath: vault,
       options: defaultOptions({ sampleTargetFiles: 5 }),
     });
-    const unsampled = report.notes.filter((n) => !n.sampled);
-    expect(unsampled.length).toBeGreaterThan(0);
-    expect(unsampled.every((n) => n.excerpt === "" && n.outline.length === 0)).toBe(true);
-    // The directory summary still counts all files.
+    // Unsampled regular notes produce NO row — every remaining row is sampled.
+    expect(report.notes.every((n) => n.sampled)).toBe(true);
+    const regular = report.notes.filter((n) => n.kind === "regular");
+    expect(regular.length).toBeLessThanOrEqual(5);
+    expect(report.notes.length).toBeLessThan(20);
+    // The directory summary still counts ALL files, sampled or not.
     expect(report.directories[0].fileCount).toBe(20);
   });
 });

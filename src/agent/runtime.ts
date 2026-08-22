@@ -19,6 +19,9 @@ export type { SortDecision } from "./runtime_sort";
 
 export { runChat, runChatQuery, CHAT_SYSTEM_PROMPT, CHAT_GROUNDED_SYSTEM_PROMPT } from "./runtime_chat";
 
-export { runComprehension } from "../comprehension/runtime_comprehension";
+export {
+  runComprehension,
+  DEFAULT_COMPREHENSION_QUESTION,
+} from "../comprehension/runtime_comprehension";
 
 export { runBuild, generateManifest } from "./runtime_build";

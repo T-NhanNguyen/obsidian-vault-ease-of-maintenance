@@ -528,18 +528,19 @@ export function sampleVault(params: SkimParams): SkimReport {
   );
 
   // Assemble report notes (deterministic path order) and slice excerpts.
+  // R2.1: unsampled regular notes are dropped from the report entirely —
+  // their metadata still feeds the directory summaries below.
   const notes: SkimFileEntry[] = [];
   let totalWords = 0;
   for (const meta of metas.values()) {
     const sampled = fullTier.includes(meta) || sampledSet.has(meta.path);
+    if (meta.kind === "regular" && !sampled) continue;
     const budget =
       meta.kind === "root"
         ? params.options.rootExcerptWords
         : meta.kind === "moc"
           ? params.options.mocExcerptWords
-          : sampled
-            ? perFile
-            : 0;
+          : perFile;
     const excerpt = firstWords(meta.bodyPrefix, budget);
     totalWords += countWords(excerpt);
     notes.push({

@@ -43,6 +43,9 @@ export interface ChatReviewSpec {
         question: string,
         ask?: ClarifyAnswerProvider,
     ) => Promise<ChatQueryResponse>;
+    /** Optional question to auto-submit once the pane renders (a command
+     * like "Understand vault" starts its run immediately). */
+    readonly initialQuestion?: string;
 }
 
 export type ReviewSpec = CleanReviewSpec | SortReviewSpec | ChatReviewSpec;
