@@ -62,6 +62,9 @@ import {
 import { buildSummaryCard, SummaryCardStore } from "./summary";
 import { SKIM_CACHE_FILENAME } from "./paths";
 import type { ChatQueryResponse, ChatQueryResult } from "../types";
+import { readPromptSection, fillTemplate } from "../definitions";
+import protocolDefinitionMd from "../../maintainer-definitions/comprehension-vault-protocol.md";
+import runMessagesDefinitionMd from "../../maintainer-definitions/comprehension-run-messages.md";
 
 /** Safety valve on loop turns — the tool-call budget is the real cap. */
 const MAX_TURNS = 40;
@@ -71,38 +74,37 @@ const MAX_CLARIFIES_PER_RUN = 3;
 const MAX_EVIDENCE_SOURCES = 6;
 /** Default question when the command auto-submits (or the user sends an
  * empty prompt). */
-export const DEFAULT_COMPREHENSION_QUESTION = "Understand this vault.";
+export const DEFAULT_COMPREHENSION_QUESTION = readPromptSection(
+  runMessagesDefinitionMd,
+  "Default question",
+);
 
-export const COMPREHENSION_SYSTEM_PROMPT =
-  "You are reading a personal notes vault like a book. Follow the protocol:\n" +
-  "1. COVER — the skim report's root notes / README / MOC notes are the book " +
-  "jacket. Form 1-3 initial hypotheses; record each with ledger_add " +
-  "(score 0.3-0.6).\n" +
-  "2. TEXTURE — call skim once for the whole vault: it returns a terse JSON " +
-  "report (path, first-N-words excerpt, heading outline, word count per note, " +
-  "plus one summary line per top-level folder). Synthesize what this vault is " +
-  "about; raise/lower hypothesis scores with ledger_score, attaching terse " +
-  "evidence like \"path:heading:lines\".\n" +
-  "3. STRUCTURE — the report's directory summaries and MOC outlines are the " +
-  "table of contents. Cross-check your synthesis; adjust scores.\n" +
-  "4. VERIFY — pull your top open assumptions (ledger_print), then call " +
-  "verify with 2-4 precise questions as ONE batch. verify returns top-3 " +
-  "snippets with locations per question. Score up/down and attach the " +
-  "locations as evidence. A few rounds maximum.\n" +
-  "5. DEEPEN — if one or two folders dominate, call skim again with " +
-  "path_filter set to those folders to read them deeper.\n" +
-  "6. SUMMARIZE — when ledger_status reports status \"confirmed\", stop " +
-  "calling tools and write the final one-page synthesis (2-5 sentences, " +
-  "**bold** key terms).\n" +
-  "Rules:\n" +
-  "- Every hypothesis lives in the ledger. Never invent facts not in the " +
-  "sources; evidence strings are terse.\n" +
-  "- Call ledger_status before deciding to stop. Statuses: confirmed (stop + " +
-  "synthesize), needs_verification (continue), conflicted / " +
-  "insufficient_evidence (the runtime will ask the user — convert the answer " +
-  "into ledger changes), low_confidence (may print with a flag).\n" +
-  "- Optional clarification (hot topics) may be acted on via clarify.\n" +
-  "- The runtime enforces a hard tool-call budget — use calls sparingly.";
+// isComprehensionRequest: true only for the explicit "understand the vault"
+// request — the command's auto-submitted question, matched case-insensitively.
+// The chat pane routes on this so an ordinary follow-up prompt (e.g. "hello")
+// is answered by plain RAG chat instead of re-running the whole protocol.
+export function isComprehensionRequest(question: string): boolean {
+  return question.trim().toLowerCase() === DEFAULT_COMPREHENSION_QUESTION.toLowerCase();
+}
+
+export const COMPREHENSION_SYSTEM_PROMPT = readPromptSection(
+  protocolDefinitionMd,
+  "Protocol",
+);
+
+/** Per-turn prompt templates for the comprehension loop, all sourced from
+ * maintainer-definitions/comprehension-run-messages.md (tunable without
+ * touching code). */
+const RUN_MESSAGE_TEMPLATES = {
+  nudge: readPromptSection(runMessagesDefinitionMd, "Nudge"),
+  optionalClarifyHint: readPromptSection(runMessagesDefinitionMd, "Optional clarification hint"),
+  mandatoryAnswered: readPromptSection(runMessagesDefinitionMd, "Mandatory clarification answered"),
+  mandatoryNoAnswer: readPromptSection(runMessagesDefinitionMd, "Mandatory clarification no answer"),
+  clarifyConflicted: readPromptSection(runMessagesDefinitionMd, "Clarify question conflicted"),
+  clarifyInsufficient: readPromptSection(runMessagesDefinitionMd, "Clarify question insufficient evidence"),
+  clarifyBudget: readPromptSection(runMessagesDefinitionMd, "Clarify question budget exhausted"),
+  finalSynthesisRequest: readPromptSection(runMessagesDefinitionMd, "Final synthesis request"),
+} as const;
 
 // ---------------------------------------------------------------------------
 // Test seams (the same pattern as the chat runtime's client factory)
@@ -603,12 +605,12 @@ function buildClarifyQuestion(
     const lines = leading
       .map((e) => `${e.id} [${e.score.toFixed(2)}] "${e.assumption}"`)
       .join("  vs  ");
-    return `Two leading hypotheses contradict each other: ${lines}. Which is right, or how should I reconcile them?`;
+    return fillTemplate(RUN_MESSAGE_TEMPLATES.clarifyConflicted, { lines });
   }
   if (decision.reason === "insufficient_evidence") {
-    return "I have insufficient evidence to understand this vault. Give me a keyword, folder, or starting note to focus on.";
+    return RUN_MESSAGE_TEMPLATES.clarifyInsufficient;
   }
-  return "My tool-call budget is nearly exhausted and the run is not confirmed. What should I prioritize with the remaining calls?";
+  return RUN_MESSAGE_TEMPLATES.clarifyBudget;
 }
 
 /** Runs a mandatory clarification through the chat answer provider and
@@ -630,17 +632,13 @@ async function runMandatoryClarify(
     ctx.clarifyPending = false; // the model now converts the answer
     messages.push({
       role: "user",
-      content:
-        `[Mandatory clarification] ${question}\nUser answer: ${answer}\n` +
-        "Convert the answer into ledger changes (ledger_add / ledger_score) and continue.",
+      content: fillTemplate(RUN_MESSAGE_TEMPLATES.mandatoryAnswered, { question, answer }),
     });
     return true;
   }
   messages.push({
     role: "user",
-    content:
-      `[Mandatory clarification] ${question}\nNo answer received. ` +
-      "Continue with the current evidence and stop with a flagged summary.",
+    content: fillTemplate(RUN_MESSAGE_TEMPLATES.mandatoryNoAnswer, { question }),
   });
   return false;
 }
@@ -809,9 +807,10 @@ async function runLoop(
       if (decision.action === "optional") {
         messages.push({
           role: "system",
-          content:
-            `Optional clarification available (${decision.reason}): ${decision.detail ?? ""} ` +
-            "You may call clarify, or continue.",
+          content: fillTemplate(RUN_MESSAGE_TEMPLATES.optionalClarifyHint, {
+            reason: decision.reason,
+            detail: decision.detail ?? "",
+          }),
         });
       }
     } else if (response.content) {
@@ -847,9 +846,10 @@ async function runLoop(
       // Non-terminal stop: nudge the model to continue the protocol.
       messages.push({
         role: "system",
-        content:
-          `Status is "${status.status}" — ${status.reason} ` +
-          "Continue the protocol (skim/verify/score). Do not write the final synthesis yet.",
+        content: fillTemplate(RUN_MESSAGE_TEMPLATES.nudge, {
+          status: status.status,
+          reason: status.reason,
+        }),
       });
     } else {
       return; // empty response — nothing more to do
@@ -943,9 +943,9 @@ export async function runComprehension(
           ...messages,
           {
             role: "user",
-            content:
-              "Write the final one-page vault summary synthesis (2-4 sentences, " +
-              `**bold** key terms) from the ledger:\n${ledger.print(5)}`,
+            content: fillTemplate(RUN_MESSAGE_TEMPLATES.finalSynthesisRequest, {
+              ledger: ledger.print(5),
+            }),
           },
         ],
         null,

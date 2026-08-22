@@ -39,51 +39,24 @@ import type { GlobalQueryResult } from "../indexer/community_reports";
 import type { SearchResult } from "../indexer/db";
 import type { ChatQueryResponse } from "../types";
 import type { ChatMessage } from "./llm_client";
+import { readPromptSection, fillTemplate } from "../definitions";
+import chatPromptsMd from "../../maintainer-definitions/chat-research-assistant.md";
 
-export const CHAT_SYSTEM_PROMPT =
-  "You are a research assistant for a personal notes vault. " +
-  "Answer questions that do NOT need the vault's notes — general computation, trivia, off-topic questions, web-search-style questions — directly and honestly, and do not call any tool. " +
-  "To answer questions about the vault's notes, first call the search_index tool with a natural-language query; it returns numbered sources [1], [2], … with their full text. " +
-  "Then answer using ONLY those sources. " +
-  "After every claim that uses a source, call the cite_source tool with the source's number (e.g. cite_source(source_id=1)). " +
-  "The tool returns a marker like [1]; insert that marker into your answer after the claim. " +
-  "Call cite_source for EACH claim that draws from a source; use different source_id values for different sources. " +
-  "If a claim is not supported by any source, do not cite anything. " +
-  "Never mention file names inline. " +
-  "Write in short markdown: brief paragraphs, bullets for lists, and **bold** for key terms. " +
-  "If the search returned nothing relevant, say so plainly.";
+export const CHAT_SYSTEM_PROMPT = readPromptSection(chatPromptsMd, "Agentic chat");
 
 // Used when the chat model cannot emit tool calls (detected by the capability
 // probe): the plugin retrieves notes deterministically and the model only
 // writes a grounded answer — no tool protocol involved.
-export const CHAT_GROUNDED_SYSTEM_PROMPT =
-  "You are a research assistant for a personal notes vault. " +
-  "The user's notes are provided in numbered blocks ([1], [2], …). " +
-  "Answer the question using ONLY those notes — never invent facts. " +
-  "After each claim that draws from a note, add its number in brackets, e.g. [1]. " +
-  "If the notes contain nothing relevant, say so plainly and do not answer from general knowledge. " +
-  "Never mention file names inline. " +
-  "Write in short markdown: brief paragraphs, bullets for lists, and **bold** for key terms.";
+export const CHAT_GROUNDED_SYSTEM_PROMPT = readPromptSection(chatPromptsMd, "Grounded chat");
 
 /** The manifest-task hint appended to the agentic system prompt when the
  * manifest has uncovered folders — the harness's task context (handoff
  * §flow step 2): the model needs the folder list to ask about them. Kept
  * compact: paths only, never file samples. */
+const MANIFEST_CONTEXT_HINT_TEMPLATE = readPromptSection(chatPromptsMd, "Manifest context hint");
+
 function manifestContextPrompt(uncoveredPaths: string[]): string {
-  return (
-    "\n\nManifest task context: the vault manifest has no purpose for these folders yet: " +
-    uncoveredPaths.join(", ") +
-    ". If the user's task concerns the manifest: ask for each folder's purpose " +
-    "with the clarify tool (one folder per call, folder path in the question). " +
-    "After the user answers, propose a concise, well-worded purpose line (a few " +
-    "words, no file names) and confirm it with the user via clarify before moving " +
-    "on — put the proposed line in quotes inside the clarify question (e.g. " +
-    "I propose 'To hold attachments and images.' for 99-assets — confirm or edit:). " +
-    "If the user confirms, the quoted proposal is written to the manifest; if they " +
-    "reply with different text, their text is written. " +
-    "Do not call search_index for the manifest task — the folder list above is all " +
-    "the information you need."
-  );
+  return fillTemplate(MANIFEST_CONTEXT_HINT_TEMPLATE, { paths: uncoveredPaths.join(", ") });
 }
 
 // Test seam only: lets a fake ILlmClient drive the chat agent loop without
@@ -232,7 +205,7 @@ async function runChatQueryAgentic(
     ? computeManifestContext(settings.vaultPath, folders)
     : { manifestPath: null, before: "", uncovered: [] as typeof folders };
   const systemPrompt = manifestContext.uncovered.length > 0
-    ? CHAT_SYSTEM_PROMPT + manifestContextPrompt(manifestContext.uncovered.map(f => f.path))
+    ? CHAT_SYSTEM_PROMPT + "\n\n" + manifestContextPrompt(manifestContext.uncovered.map(f => f.path))
     : CHAT_SYSTEM_PROMPT;
 
   const priorHistory = chatHistory();

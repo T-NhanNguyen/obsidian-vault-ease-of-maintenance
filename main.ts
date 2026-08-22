@@ -19,6 +19,7 @@ import {
   runBuild,
   runChatQuery,
   runComprehension,
+  isComprehensionRequest,
   DEFAULT_COMPREHENSION_QUESTION,
   ProposedChange,
 } from "./src/agent/runtime";
@@ -31,7 +32,7 @@ import {
   REVIEW_VIEW_TYPE,
   ReviewView,
 } from "./src/container-sidebar";
-import type { ReviewSpec, SortResultPayload } from "./src/types";
+import type { ReviewSpec, SortResultPayload, ChatReviewSpec } from "./src/types";
 
 // ---------------------------------------------------------------------------
 // Plugin Settings
@@ -846,7 +847,7 @@ export default class VaultMaintenancePlugin extends Plugin {
   handleChat(): void {
     const spec: ReviewSpec = {
       kind: "chat",
-      query: runChatQuery,
+      query: this.chatQuery(),
     };
     this.openReview(spec);
   }
@@ -854,10 +855,21 @@ export default class VaultMaintenancePlugin extends Plugin {
   handleComprehension(): void {
     const spec: ReviewSpec = {
       kind: "chat",
-      query: runComprehension,
+      query: this.chatQuery(),
       initialQuestion: DEFAULT_COMPREHENSION_QUESTION,
     };
     this.openReview(spec);
+  }
+
+  // The chat pane's query — routes the explicit "understand the vault"
+  // request to the comprehension pipeline and everything else (follow-ups
+  // like "hello" after understanding) to plain RAG chat, so a chat prompt
+  // never re-runs the whole comprehension protocol.
+  private chatQuery(): ChatReviewSpec["query"] {
+    return async (question, ask) =>
+      isComprehensionRequest(question)
+        ? runComprehension(question, ask)
+        : runChatQuery(question, ask);
   }
 }
 

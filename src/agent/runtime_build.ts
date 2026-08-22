@@ -14,6 +14,8 @@ import { MANIFEST_H1 } from "./clarify";
 import { Indexer } from "../indexer/indexer";
 import { ChatReportLlm } from "../indexer/community_reports";
 import { DatabaseManager } from "../indexer/db";
+import { readPromptSection, fillTemplate } from "../definitions";
+import manifestGenerationMd from "../../maintainer-definitions/manifest-generation.md";
 
 // ---------------------------------------------------------------------------
 // Orchestrator: build
@@ -121,13 +123,7 @@ export async function generateManifest(vaultPath: string): Promise<string> {
   const scaffoldLines = sortedFolders.map(f => `${f}/ — `);
   const scaffold = scaffoldLines.join("\n");
 
-  const system =
-    "Complete each line. The part before ' — ' is a folder path; " +
-    "write the folder's PURPOSE after it, in at most 8 words.\n" +
-    "Rules:\n- NEVER list file names. NEVER repeat the syllabus.\n" +
-    "- Use only information present in the syllabus — no speculation.\n" +
-    "- If a folder's content is ambiguous, write '(needs review)'.\n" +
-    "Output ONLY the completed lines, one per folder, in the given order.";
+  const system = readPromptSection(manifestGenerationMd, "Purpose system");
 
   let purposes: Record<string, string> = {};
   try {
@@ -135,7 +131,7 @@ export async function generateManifest(vaultPath: string): Promise<string> {
       enableThinking: thinkingEnabledFor("build"),
     }).chat(
       system,
-      `Syllabus:\n\n${syllabus}\n\nComplete these lines:\n${scaffold}`,
+      fillTemplate(readPromptSection(manifestGenerationMd, "Syllabus user"), { syllabus, scaffold }),
       null, 1,
     );
     purposes = parseLlmPurposes(response, new Set(sortedFolders));

@@ -22,9 +22,18 @@ import { Embedder } from "../indexer/embedder";
 import { DatabaseManager } from "../indexer/db";
 import type { SearchResult } from "../indexer/db";
 import { ManifestEntry, ManifestParser } from "../indexer/manifest";
+import { readPromptSection, fillTemplate } from "../definitions";
+import sortSuggestionsMd from "../../maintainer-definitions/sort-suggestions.md";
 
 const SORT_BUDGET_TOTAL = 240;
 const FALLBACK_CONFIDENCE_FLOOR = 0.6;
+
+/** Prompt templates for the post-triage suggestions call — sourced from
+ * maintainer-definitions/sort-suggestions.md (tunable without code). */
+const SORT_SUGGESTIONS_TEMPLATES = {
+  system: readPromptSection(sortSuggestionsMd, "Suggestions system"),
+  task: readPromptSection(sortSuggestionsMd, "Suggestions task"),
+} as const;
 
 function pathFor(handle: string): string {
   const reg = toolImpl.getRegistry();
@@ -403,11 +412,9 @@ async function generateSuggestions(journal: Journal, manifestConstitution: strin
   const flagged = entries.filter(e => e.state === "flagged").length;
   const stats = `Placed: ${placed}, Flagged: ${flagged}`;
 
-  const task = `Suggest 2-3 improvements based on this sort:\n${stats}\nList what, why, and risk level.`;
-  let system = "You suggest vault organization improvements.";
-  if (manifestConstitution) {
-    system += `\n\nVault structure:\n${manifestConstitution}`;
-  }
+  const task = fillTemplate(SORT_SUGGESTIONS_TEMPLATES.task, { stats });
+  const manifestSection = manifestConstitution ? `\n\nVault structure:\n${manifestConstitution}` : "";
+  const system = fillTemplate(SORT_SUGGESTIONS_TEMPLATES.system, { manifest: manifestSection });
 
   try {
     const [r] = await new LLMClient(undefined, undefined, {

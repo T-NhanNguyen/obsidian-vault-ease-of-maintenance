@@ -23,6 +23,8 @@
 import { errorMessage } from "../errors";
 import { settings } from "../config";
 import { LLMClient, Tool } from "./llm";
+import { readPromptSection } from "../definitions";
+import probePromptsMd from "../../maintainer-definitions/capability-probe.md";
 
 export type ToolCallCapability = "tool_calls" | "no_tool_calls" | "unknown";
 
@@ -36,9 +38,8 @@ export interface ConnectionProbeResult {
   error?: string;
 }
 
-const PROBE_SYSTEM_PROMPT =
-  "You have a tool named ping. You MUST call it now — do not answer in text.";
-const PROBE_USER_MESSAGE = "Call the ping tool.";
+const PROBE_SYSTEM_PROMPT = readPromptSection(probePromptsMd, "Probe system prompt");
+const PROBE_USER_MESSAGE = readPromptSection(probePromptsMd, "Probe user message");
 
 const PING_TOOL = new Tool(
   "ping",

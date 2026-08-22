@@ -57,7 +57,10 @@ export function specKey(spec: ReviewSpec): string {
         case "sort":
             return `sort:${spec.id}`;
         case "chat":
-            return "chat";
+            // Intent-aware: the plain chat command and the understand-vault
+            // command (auto-submitting an initial question) are distinct
+            // specs so the review core can switch the pane between them.
+            return spec.initialQuestion ? `chat:${spec.initialQuestion}` : "chat";
     }
 }
 

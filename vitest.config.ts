@@ -1,6 +1,23 @@
 import { defineConfig } from "vitest/config";
+import type { Plugin } from "vite";
+
+// esbuild bundles .md files as raw text (loader: { ".md": "text" }, see
+// esbuild.config.mjs) — vitest must do the same or test imports of
+// maintainer-definitions/*.md (and runtime_cleanup.ts's skill import) fail
+// with "Failed to parse source ... invalid JS syntax".
+const markdownTextPlugin = (): Plugin => ({
+  name: "markdown-text",
+  enforce: "pre",
+  transform(code, id) {
+    if (id.endsWith(".md")) {
+      return { code: `export default ${JSON.stringify(code)};`, map: null };
+    }
+    return undefined;
+  },
+});
 
 export default defineConfig({
+  plugins: [markdownTextPlugin()],
   test: {
     include: ["tests/**/*.test.ts"],
     exclude: ["tests/e2e/**"],

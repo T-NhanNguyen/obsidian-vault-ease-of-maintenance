@@ -39,15 +39,22 @@ export class ReviewCore {
     async open(spec: ReviewSpec): Promise<void> {
         const key = specKey(spec);
         if (key === this.activeSpecKey) return; // already open — just activate
+        const previousKey = this.activeSpecKey;
         this.activeSpecKey = key;
         this.openedSpec = spec;
 
         const panel = this.host.activateTab(ReviewCore.tabFor(spec));
 
-        // The chat session is mounted once; re-opening chat only activates
-        // its tab so an in-flight answer keeps rendering into it.
-        if (spec.kind === "chat" && this.chatRendered) {
-            return;
+        // The chat tab is mounted once per intent: re-opening the same
+        // intent (key dedupe above) or returning from another tab only
+        // activates it, so an in-flight answer keeps rendering into the
+        // hidden tab. Opening a DIFFERENT chat intent (plain chat vs the
+        // understand-vault command) re-renders so the new command's query
+        // function and auto-submit take effect.
+        const chat = spec.kind === "chat";
+        if (chat && this.chatRendered) {
+            if (!previousKey.startsWith("chat")) return; // returning to mounted chat
+            this.chatRendered = false; // different chat intent — re-render
         }
 
         this.showLoading(panel);

@@ -10,7 +10,9 @@ import { LLMClient, Tool } from "./llm";
 import * as toolImpl from "./tools";
 import { tokenizeWords, Validators } from "./engine";
 import type { ChatMessage } from "./llm_client";
+import { readPromptSection, fillTemplate } from "../definitions";
 import cleanupSkillMd from "../../maintainer-definitions/phase-1-note-cleanup.md";
+import cleanupAssistantMd from "../../maintainer-definitions/cleanup-assistant.md";
 
 const CLEANUP_SKILL_FILENAME = "phase-1-note-cleanup.md";
 const REWRITE_CONTENT_THRESHOLD = 0.2;
@@ -116,17 +118,13 @@ export async function runCleanup(
   const beforeHash = crypto.createHash("sha1").update(original).digest("hex").slice(0, 12);
 
   const skill = loadSkill(CLEANUP_SKILL_FILENAME);
-  const system =
-    "You are a note cleanup assistant. Follow these cleanup rules EXACTLY:\n" +
-    `${skill}\n\n` +
-    "Here is the file to clean. Apply edits using the apply_edits tool:\n" +
-    "  1. Call apply_edits with line-numbered ops (join_lines, insert_header, etc.)\n" +
-    "  2. If apply_edits is unavailable, return the COMPLETE cleaned file as text.\n" +
-    "Prefer apply_edits — it is receipt-verified and safer.\n" +
-    "Preserve all headers, code blocks, images, links, and tables exactly as-is.";
+  const system = fillTemplate(readPromptSection(cleanupAssistantMd, "Wrapper system"), { skill });
 
   const filename = path.basename(filePath);
-  const user = `Clean this file (${filename}). The full content is below:\n\n\`\`\`\n${original}\n\`\`\``;
+  const user = fillTemplate(readPromptSection(cleanupAssistantMd, "Clean file user"), {
+    filename,
+    content: original,
+  });
 
   const tools = [
     new Tool(

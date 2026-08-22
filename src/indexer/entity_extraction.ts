@@ -27,22 +27,14 @@ import { buildReportContext } from "./community_reports";
 import type { ReportLlm } from "./community_reports";
 import { entityId } from "./graph";
 import type { Edge, EntityRow, EntityWriteInput, SectionEntityInput } from "./db_worker/types";
+import { readPromptSection } from "../definitions";
+import extractionDefinitionMd from "../../maintainer-definitions/entity-extraction.md";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-export const EXTRACTION_SYSTEM_PROMPT =
-  "You are an entity extractor for a personal notes vault. The notes below are grouped by file.\n" +
-  "Extract the KEY entities (organizations, technologies, concepts, people, places, processes) and the typed RELATIONSHIPS between them.\n" +
-  "Rules:\n" +
-  "- Use ONLY the provided notes — never invent entities, names, or relationships.\n" +
-  "- Every entity name must appear VERBATIM in the notes.\n" +
-  "- Output ONLY lines in exactly this format:\n" +
-  "  ENTITY|<name>|<type>\n" +
-  "  REL|<entity A>|<entity B>|<relation>\n" +
-  "- Use relation types from: produces, part_of, related_to, depends_on, competes_with, located_in, used_by, causes, compares_to.\n" +
-  "- Emit at most 30 ENTITY lines and 30 REL lines. No markdown, no explanations, no preamble.";
+export const EXTRACTION_SYSTEM_PROMPT = readPromptSection(extractionDefinitionMd, "Extraction");
 
 /**
  * Token budget per extraction call — also the per-file cap: buildReportContext

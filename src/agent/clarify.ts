@@ -18,10 +18,19 @@ import { VaultIO } from "../io/vault_io";
 import { pathMatchesPatterns } from "./engine";
 import { applyOps, type EditOp } from "./tools_apply_edits";
 import { TocReader, TOC_HEADER, type ManifestEntry } from "../indexer/manifest";
+import { readPromptSection, fillTemplate } from "../definitions";
+import folderPurposeMd from "../../maintainer-definitions/folder-purpose-question.md";
 
 export const MANIFEST_H1 = "# vault <!-- Auto-generated from GraphRAG index — review and edit -->";
 const FOLDER_FILE_SAMPLE = 6;
 const MAX_PURPOSE_CHARS = 120;
+
+/** Prompt templates for the folder-purpose clarify pass — sourced from
+ * maintainer-definitions/folder-purpose-question.md (tunable without code). */
+const FOLDER_PURPOSE_TEMPLATES = {
+  question: readPromptSection(folderPurposeMd, "Question"),
+  context: readPromptSection(folderPurposeMd, "Context"),
+} as const;
 
 // Short confirmations of a proposed purpose line (the model's propose-and-
 // confirm pattern). A match means "use the wording proposed in the confirm
@@ -215,10 +224,8 @@ export function buildFolderQuestion(folder: VaultFolderInfo): ClarifyQuestion {
     : "";
   return {
     folderPath: folder.path,
-    prompt: `What is the purpose of the folder "${folder.path}"? Answer in a few words — this becomes the manifest purpose line.`,
-    context:
-      `The manifest (_manifest.md) lists each vault folder with a one-line purpose: ` +
-      `\`## folder/ <!-- purpose -->\`.${filesLine}`,
+    prompt: fillTemplate(FOLDER_PURPOSE_TEMPLATES.question, { folder: folder.path }),
+    context: fillTemplate(FOLDER_PURPOSE_TEMPLATES.context, { files: filesLine }),
   };
 }
 

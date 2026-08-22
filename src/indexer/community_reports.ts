@@ -30,6 +30,9 @@ import type {
   CommunityRow,
   SectionSearchRow,
 } from "./db_worker/types";
+import { readPromptSection } from "../definitions";
+import communityReportMd from "../../maintainer-definitions/community-report.md";
+import globalQueryMd from "../../maintainer-definitions/global-query.md";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -51,20 +54,9 @@ export const DEFAULT_TOP_REPORTS = 3;
 /** Question markers that signal "overview of the vault" (global mode). */
 export const OVERVIEW_MARKERS = ["overview", "summar", "topic", "structure", "contents"] as const;
 
-export const REPORT_SYSTEM_PROMPT =
-  "You are a librarian summarizing one group of related notes (a community) in a personal notes vault.\n" +
-  "The sections below are all members of the same community. Write a concise markdown report:\n" +
-  "- One short summary paragraph: what this community is about and how its topics relate.\n" +
-  "- A bullet list of the key topics or concepts, one line each.\n" +
-  "Rules:\n- Use ONLY the provided sections — never invent facts.\n" +
-  "- Keep the report under 150 words.\n" +
-  "- Output ONLY the markdown report.";
+export const REPORT_SYSTEM_PROMPT = readPromptSection(communityReportMd, "Report");
 
-export const GLOBAL_SYSTEM_PROMPT =
-  "You are a research assistant for a personal notes vault. The user asked an overview question about the vault as a whole.\n" +
-  "You are given summaries of the vault's most relevant communities, each under a '## <community>' heading.\n" +
-  "Answer the question using ONLY those summaries — never invent facts, never mention notes or sections the summaries do not cover.\n" +
-  "Write in short markdown: brief paragraphs and **bold** for key terms. If the summaries do not answer the question, say so plainly.";
+export const GLOBAL_SYSTEM_PROMPT = readPromptSection(globalQueryMd, "Global");
 
 const NO_REPORTS_MESSAGE =
   "No community reports exist — global mode is unavailable. The index may have been " +

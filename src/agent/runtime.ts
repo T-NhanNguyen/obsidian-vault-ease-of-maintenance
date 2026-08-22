@@ -21,6 +21,7 @@ export { runChat, runChatQuery, CHAT_SYSTEM_PROMPT, CHAT_GROUNDED_SYSTEM_PROMPT 
 
 export {
   runComprehension,
+  isComprehensionRequest,
   DEFAULT_COMPREHENSION_QUESTION,
 } from "../comprehension/runtime_comprehension";
 

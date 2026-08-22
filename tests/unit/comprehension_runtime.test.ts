@@ -15,6 +15,8 @@ import type { SearchResult, SectionKeyRow } from "../../src/indexer/db_worker/ty
 import {
   runComprehension,
   compactConversation,
+  isComprehensionRequest,
+  DEFAULT_COMPREHENSION_QUESTION,
   setComprehensionLlmFactory,
   resetComprehensionLlmFactory,
   setComprehensionVerifySeam,
@@ -479,5 +481,28 @@ describe("R2 bounded-context comprehension", () => {
     expect(stub.toolSets[0]).toContain("skim");
     expect(state.toolCallsUsed).toBeLessThan(2);
     expect(state.coverage).toBeGreaterThan(0.9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chat routing — the comprehension pipeline must run ONLY for the explicit
+// "understand the vault" request; every other chat prompt (e.g. "hello")
+// must go to plain RAG chat instead of re-running the whole protocol.
+// ---------------------------------------------------------------------------
+
+describe("isComprehensionRequest routing", () => {
+  it("matches the command's auto-submitted question", () => {
+    expect(isComprehensionRequest(DEFAULT_COMPREHENSION_QUESTION)).toBe(true);
+  });
+
+  it("matches case-insensitively with surrounding whitespace", () => {
+    expect(isComprehensionRequest("  understand THIS vault.  ")).toBe(true);
+  });
+
+  it("rejects ordinary chat prompts", () => {
+    expect(isComprehensionRequest("hello")).toBe(false);
+    expect(isComprehensionRequest("What is the vault about?")).toBe(false);
+    expect(isComprehensionRequest("")).toBe(false);
+    expect(isComprehensionRequest("Update the manifest")).toBe(false);
   });
 });
