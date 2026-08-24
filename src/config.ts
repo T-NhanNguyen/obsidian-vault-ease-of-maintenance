@@ -111,6 +111,10 @@ export interface ComprehensionSettings {
   hotTopics: string[];
   /** Max folders/notes the progressive-deepening pass re-reads deeper. */
   deepenMaxFolders: number;
+  /** When true, "Understand vault" always re-runs the pipeline, ignoring a
+   * valid summary card (the run-once reuse rule, handoff Part A). Sticky:
+   * flip it back to false to resume reuse. */
+  forceRefresh?: boolean;
 }
 
 export interface AgentSettings {
@@ -228,6 +232,7 @@ export function defaultSettings(): Settings {
       minCoverage: 0.6,
       hotTopics: [],
       deepenMaxFolders: 3,
+      forceRefresh: false,
     },
   };
 }

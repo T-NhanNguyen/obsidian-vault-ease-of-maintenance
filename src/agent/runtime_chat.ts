@@ -21,6 +21,7 @@ import {
   NO_ANSWER_MARKER_PREFIX,
   type ClarifyAnswerProvider,
 } from "./tools";
+import { buildComprehendVaultTool } from "./tools_comprehend";
 import {
   runClarifyDialog,
   computeManifestContext,
@@ -192,7 +193,7 @@ async function runChatQueryAgentic(
     if (answer) appendClarifyTurn(settings.vaultPath, "user", answer);
     return answer;
   };
-  const tools = withClarify([searchTool, citeTool], chatAsk);
+  const tools = withClarify([searchTool, citeTool, buildComprehendVaultTool()], chatAsk);
 
   // Manifest task context: the model needs the uncovered-folder list to ask
   // about them (harness §flow step 2). Computed once per run and reused for

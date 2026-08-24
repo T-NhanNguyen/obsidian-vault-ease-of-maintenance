@@ -8,6 +8,7 @@ import { settings, INDEX_DB_SUFFIX } from "../config";
 import { VaultIO } from "../io/vault_io";
 import { LLMClient, Tool } from "./llm";
 import * as toolImpl from "./tools";
+import { buildComprehendVaultTool } from "./tools_comprehend";
 import { tokenizeWords, Validators } from "./engine";
 import type { ChatMessage } from "./llm_client";
 import { readPromptSection, fillTemplate } from "../definitions";
@@ -133,6 +134,7 @@ export async function runCleanup(
       toolImpl.APPLY_EDITS_TOOL.parameters,
       toolImpl.applyEdits,
     ),
+    buildComprehendVaultTool(),
   ];
 
   const client = new LLMClient();

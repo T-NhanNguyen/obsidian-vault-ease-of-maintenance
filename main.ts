@@ -16,7 +16,9 @@ import { closeChatSession, closeClarifySession } from "./src/agent/chat_session"
 import {
   runCleanup,
   runTriage,
-  runBuild,
+  prepareBuild,
+  runBuildIndex,
+  runComprehensionBuildStage,
   runChatQuery,
   runComprehension,
   isComprehensionRequest,
@@ -722,13 +724,44 @@ export default class VaultMaintenancePlugin extends Plugin {
         new Notice("Vault path not available.");
         return;
       }
-      const result = await runBuild(vaultPath);
+      const { plan } = await prepareBuild(vaultPath);
+      if (plan === "warm") {
+        const result = await runBuildIndex(vaultPath);
+        notice.hide();
+        new Notice(
+          `${result} — comprehension reused from the summary card; the manifest keeps its (needs review) markers.`,
+        );
+        return;
+      }
       notice.hide();
-      new Notice(result);
+      new Notice("Understanding the vault first — the index build will follow in the chat pane.");
+      this.openReview({
+        kind: "chat",
+        query: this.buildChatQuery(),
+        initialQuestion: DEFAULT_COMPREHENSION_QUESTION,
+      });
     } catch (e) {
       notice.hide();
       new Notice(`Build failed: ${errorMessage(e)}`);
     }
+  }
+
+  // The cold-path build query (handoff-2 Stage 2 + 3): the first question
+  // runs the comprehension loop once, populates the manifest, and builds the
+  // index; follow-up questions reuse the fresh card (the run-once rule) and
+  // never re-run the stage. The chat's in-flight answer provider is the
+  // clarify channel for both the loop and the population's user asks.
+  private buildChatQuery(): ChatReviewSpec["query"] {
+    let built = false;
+    return async (question, ask) => {
+      if (built) {
+        return runComprehension(question, ask);
+      }
+      built = true;
+      const comprehension = await runComprehensionBuildStage(settings.vaultPath, question, ask);
+      const build = await runBuildIndex(settings.vaultPath);
+      return { ...comprehension, answer: `${comprehension.answer}\n\n${build}` };
+    };
   }
 
   async handleCleanCurrentFile(): Promise<void> {

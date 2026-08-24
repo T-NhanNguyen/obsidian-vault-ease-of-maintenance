@@ -89,6 +89,7 @@ comprehension:
   min_coverage: 0.5
   hot_topics: "colmac, recipes"
   deepen_max_folders: 2
+  force_refresh: true
 `);
     expect(cfg.comprehensionTokenBudget).toBe(2000);
     expect(cfg.comprehensionRootExcerptWords).toBe(50);
@@ -104,6 +105,7 @@ comprehension:
     expect(cfg.comprehensionMinCoverage).toBe(0.5);
     expect(cfg.comprehensionHotTopics).toBe("colmac, recipes");
     expect(cfg.comprehensionDeepenMaxFolders).toBe(2);
+    expect(cfg.comprehensionForceRefresh).toBe(true);
 
     // Absent keys stay undefined — code defaults apply.
     expect(parseConfigYaml("").comprehensionTokenBudget).toBe(undefined);

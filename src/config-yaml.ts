@@ -55,6 +55,7 @@ export interface YamlPluginSettings {
   /** Comma-separated hot-topic keywords (the parser is scalar-only). */
   comprehensionHotTopics?: string;
   comprehensionDeepenMaxFolders?: number;
+  comprehensionForceRefresh?: boolean;
 }
 
 interface YamlSection {
@@ -165,6 +166,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     comprehensionMinCoverage: num(comprehension?.["min_coverage"]),
     comprehensionHotTopics: str(comprehension?.["hot_topics"]),
     comprehensionDeepenMaxFolders: num(comprehension?.["deepen_max_folders"]),
+    comprehensionForceRefresh: bool(comprehension?.["force_refresh"]),
   };
 }
 

@@ -8,6 +8,7 @@ import * as path from "path";
 import {
   buildSummaryCard,
   SummaryCardStore,
+  isReusableCard,
   type SummaryCardData,
 } from "../../src/comprehension/summary";
 import type { LedgerEntry } from "../../src/comprehension/ledger";
@@ -88,6 +89,44 @@ describe("buildSummaryCard", () => {
     );
     expect(card).toContain("- (none recorded)");
     expect(card).toContain("- (no directories scanned)");
+  });
+});
+
+describe("SummaryCardStore.readStructured", () => {
+  it("parses the frontmatter and synthesis of a written card", () => {
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), "nm-summary-structured-"));
+    tempDirs.push(vault);
+    const store = new SummaryCardStore(vault);
+    store.write(buildSummaryCard(data()));
+    const structured = store.readStructured();
+    expect(structured).not.toBeNull();
+    expect(structured!.status).toBe("confirmed");
+    expect(structured!.flagged).toBe(false);
+    expect(structured!.coverage).toBeCloseTo(0.9, 6);
+    expect(structured!.generatedAt).toBe("2026-08-20T00:00:00.000Z");
+    expect(structured!.synthesis).toBe("The vault is a personal recipe collection.");
+  });
+
+  it("returns null for a missing card", () => {
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), "nm-summary-structured-"));
+    tempDirs.push(vault);
+    expect(new SummaryCardStore(vault).readStructured()).toBeNull();
+  });
+
+  it("returns null for a card without frontmatter", () => {
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), "nm-summary-structured-"));
+    tempDirs.push(vault);
+    const store = new SummaryCardStore(vault);
+    store.write("# Plain body\n\nNo frontmatter.");
+    expect(store.readStructured()).toBeNull();
+  });
+
+  it("isReusableCard accepts only confirmed, unflagged cards", () => {
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), "nm-summary-structured-"));
+    tempDirs.push(vault);
+    const store = new SummaryCardStore(vault);
+    store.write(buildSummaryCard(data({ status: "low_confidence", flagged: true })));
+    expect(isReusableCard(store.readStructured())).toBe(false);
   });
 });
 

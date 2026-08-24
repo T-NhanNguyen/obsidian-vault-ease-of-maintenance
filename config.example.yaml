@@ -115,6 +115,7 @@ comprehension:
   min_coverage: 0.6               # minimum sampled-coverage fraction before confirming.
   hot_topics: ""                  # comma-separated keywords → optional clarification.
   deepen_max_folders: 3           # folders the progressive-deepening pass re-reads.
+  force_refresh: false            # set true to always re-run comprehension (ignore a valid summary card).
 
 index:
   warn_mb: 256                # warning threshold for the index file size (MB). sql.js

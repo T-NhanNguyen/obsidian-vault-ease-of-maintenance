@@ -59,7 +59,7 @@ import {
   type ClarificationDecision,
   type ComprehensionStatus,
 } from "./state";
-import { buildSummaryCard, SummaryCardStore } from "./summary";
+import { buildSummaryCard, SummaryCardStore, isReusableCard, buildReuseAnswer, type RunComprehensionOptions } from "./summary";
 import { SKIM_CACHE_FILENAME } from "./paths";
 import type { ChatQueryResponse, ChatQueryResult } from "../types";
 import { readPromptSection, fillTemplate } from "../definitions";
@@ -861,12 +861,12 @@ async function runLoop(
 // Entry point
 // ---------------------------------------------------------------------------
 
-/** Runs (or resumes) the vault-comprehension pipeline. Matches the chat
- * query signature so the chat surface (ChatReviewSpec) can host it; the
- * answer is the final synthesis, the results are the verify evidence. */
+/** Runs (or resumes) the vault-comprehension pipeline; the answer is the
+ * final synthesis, the results are the verify evidence (ChatReviewSpec host). */
 export async function runComprehension(
   question: string,
   ask?: ClarifyAnswerProvider,
+  options?: RunComprehensionOptions,
 ): Promise<ChatQueryResponse> {
   if (!settings.vaultPath) {
     return {
@@ -874,6 +874,11 @@ export async function runComprehension(
       results: [],
       citationMap: {},
     };
+  }
+  // Run-once (handoff Part A): a valid card short-circuits the run before reset().
+  if (!(options?.forceRefresh ?? settings.comprehension.forceRefresh)) {
+    const existing = new SummaryCardStore(settings.vaultPath).readStructured();
+    if (isReusableCard(existing)) return buildReuseAnswer(existing);
   }
   const comprehension = settings.comprehension;
   const stateStore = new ComprehensionState(settings.vaultPath, undefined, stateOptionsFrom(comprehension));

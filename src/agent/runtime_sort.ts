@@ -8,6 +8,7 @@ import { settings, INDEX_DB_SUFFIX, thinkingEnabledFor } from "../config";
 import { errorMessage } from "../errors";
 import { LLMClient } from "./llm";
 import * as toolImpl from "./tools";
+import { buildComprehendVaultTool } from "./tools_comprehend";
 import {
   ELIGIBLE,
   NEAR_DUP,
@@ -419,7 +420,7 @@ async function generateSuggestions(journal: Journal, manifestConstitution: strin
   try {
     const [r] = await new LLMClient(undefined, undefined, {
       enableThinking: thinkingEnabledFor("sort"),
-    }).chat(system, task, null, 1);
+    }).chat(system, task, [buildComprehendVaultTool()], 1);
     return r.trim();
   } catch {
     return "";

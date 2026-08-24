@@ -229,7 +229,7 @@ export function buildFolderQuestion(folder: VaultFolderInfo): ClarifyQuestion {
   };
 }
 
-function sanitizePurpose(answer: string): string {
+export function sanitizePurpose(answer: string): string {
   return answer
     .replace(/<!--|-->/g, "")
     .replace(/\s+/g, " ")

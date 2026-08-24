@@ -25,4 +25,4 @@ export {
   DEFAULT_COMPREHENSION_QUESTION,
 } from "../comprehension/runtime_comprehension";
 
-export { runBuild, generateManifest } from "./runtime_build";
+export { prepareBuild, runBuildIndex, runComprehensionBuildStage } from "./runtime_build";
