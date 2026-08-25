@@ -14,7 +14,7 @@
 // called by the caller after the user accepts) touches disk, and it guards
 // the round trip through the parser before writing.
 
-import { VaultIO } from "../io/vault_io";
+import { VaultIO, isRootFolderPath } from "../io/vault_io";
 import { pathMatchesPatterns } from "./engine";
 import { applyOps, type EditOp } from "./tools_apply_edits";
 import { TocReader, TOC_HEADER, type ManifestEntry } from "../indexer/manifest";
@@ -161,7 +161,11 @@ export function scanVaultFolders(vaultPath: string, ignorePatterns: string[]): V
   };
 
   walk("");
-  return folders.sort((a, b) => a.path.localeCompare(b.path));
+  // Post-processing prune: the root (""/"."/"./") is never a real folder
+  // and must not reach the manifest or any folder-prompt (handoff-2).
+  return folders
+    .filter((f) => !isRootFolderPath(f.path))
+    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
 // ---------------------------------------------------------------------------

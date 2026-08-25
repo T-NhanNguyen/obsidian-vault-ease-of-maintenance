@@ -42,11 +42,25 @@ export async function prepareBuild(vaultPath: string): Promise<{ plan: BuildComp
   return { plan: buildComprehensionPlan(vaultPath) };
 }
 
+// Test seam only (the same pattern as the chat/comprehension factories): a
+// stub replaces the sql.js index build so router tests verify the stage
+// wiring without a real database or wasm.
+let buildIndexSeam: (() => Promise<string>) | null = null;
+
+export function setBuildIndexSeam(factory: (() => Promise<string>) | null): void {
+  buildIndexSeam = factory;
+}
+
+export function resetBuildIndexSeam(): void {
+  buildIndexSeam = null;
+}
+
 /** Stage 3 — the single index build. The indexer reads the manifest from
  * disk on every build (ManifestParser.getCommunitySeeds), so a populated
  * manifest maps the communities from real purposes; with markers left, the
  * folder-name fallback seeds them. */
 export async function runBuildIndex(vaultPath: string): Promise<string> {
+  if (buildIndexSeam) return buildIndexSeam();
   const t0 = Date.now();
   const llmSeam = new ChatReportLlm();
   const indexer = new Indexer(settings, undefined, llmSeam, llmSeam);

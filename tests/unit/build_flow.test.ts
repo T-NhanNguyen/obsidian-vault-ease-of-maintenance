@@ -20,7 +20,23 @@ import { buildSummaryCard, SummaryCardStore, type SummaryCardData } from "../../
 import {
   prepareBuild,
   runComprehensionBuildStage,
+  setBuildIndexSeam,
+  resetBuildIndexSeam,
 } from "../../src/agent/runtime_build";
+import {
+  setChatClientFactory,
+  resetChatClientFactory,
+} from "../../src/agent/runtime_chat";
+import {
+  setProbeClientFactory,
+  resetCapabilityCache,
+} from "../../src/agent/capability";
+import { runChatRouter } from "../../src/chat_router";
+import {
+  openChatSession,
+  closeChatSession,
+  closeClarifySession,
+} from "../../src/agent/chat_session";
 import {
   DEFAULT_COMPREHENSION_QUESTION,
   setComprehensionLlmFactory,
@@ -160,12 +176,43 @@ class StubHybridDb implements HybridQueryDb {
   }
 }
 
+/** An EMPTY index — no section keys — so verifyQuestions reports
+ * index: "missing" (the cold build runs comprehension before any index). */
+class StubMissingIndexDb implements HybridQueryDb {
+  async searchSimilar(): Promise<SearchResult[]> {
+    return [];
+  }
+  async getSectionKeys(): Promise<SectionKeyRow[]> {
+    return [];
+  }
+  async getAllEntities() {
+    return [];
+  }
+  async getSectionsForEntities() {
+    return [];
+  }
+  async getWikilinkEdges() {
+    return [];
+  }
+  async getSemanticEdges() {
+    return [];
+  }
+  async getSectionsByKeys() {
+    return [];
+  }
+}
+
 const tempVaults: string[] = [];
 
 beforeEach(() => {
+  resetCapabilityCache();
+  resetChatClientFactory();
   resetComprehensionLlmFactory();
   resetComprehensionVerifySeam();
   resetManifestPopulateLlmFactory();
+  resetBuildIndexSeam();
+  closeChatSession();
+  closeClarifySession();
   updateSettings(defaultSettings());
 });
 
@@ -173,6 +220,11 @@ afterAll(() => {
   setComprehensionLlmFactory(null);
   resetComprehensionVerifySeam();
   setManifestPopulateLlmFactory(null);
+  setChatClientFactory(null);
+  setProbeClientFactory(null);
+  resetBuildIndexSeam();
+  closeChatSession();
+  closeClarifySession();
   for (const dir of tempVaults.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -256,6 +308,39 @@ describe("runComprehensionBuildStage", () => {
     expect(manifest).toContain("## a/ <!-- cooking recipes -->");
     expect(manifest).not.toContain("(needs review)");
   });
+
+  it("completes a cold build when the index is unavailable (verification skipped)", async () => {
+    const vault = makeVault({ "a/one.md": "# One\n\n" + "word ".repeat(20) });
+    tempVaults.push(vault);
+    configure(vault, { minCoverage: 0 });
+    // The cold build runs comprehension BEFORE any index exists — verify
+    // reports index "missing" and the run must confirm on skim coverage
+    // instead of firing the impossible clarify dead-end.
+    setComprehensionVerifySeam({
+      embedder: { embed: async () => [0.1], embedBatch: async () => [[0.1]] },
+      db: new StubMissingIndexDb(),
+    });
+    await prepareBuild(vault);
+    const compStub = new StubLlmClient([
+      toolCallResponse("skim", {}),
+      toolCallResponse("ledger_add", { assumption: "The vault is about cooking", score: 0.6 }),
+      toolCallResponse("verify", { questions: ["What topics dominate?"] }),
+      contentOnlyResponse("The vault is a cooking recipe collection."),
+    ]);
+    setComprehensionLlmFactory(() => compStub);
+    const popStub = new StubLlmClient([contentOnlyResponse("a/ — cooking recipes\n")]);
+    setManifestPopulateLlmFactory(() => new LLMClient(AGENT_MODEL, popStub));
+
+    const response = await runComprehensionBuildStage(vault, DEFAULT_COMPREHENSION_QUESTION);
+
+    expect(response.answer).toContain("confirmed");
+    const card = fs.readFileSync(path.join(vault, ".note-maintainer/vault-summary.md"), "utf-8");
+    expect(card).toContain("status: confirmed");
+    expect(card).not.toContain("flagged: true");
+    const manifest = fs.readFileSync(path.join(vault, "_manifest.md"), "utf-8");
+    expect(manifest).toContain("## a/ <!-- cooking recipes -->");
+    expect(manifest).not.toContain("(needs review)");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -282,5 +367,71 @@ describe("getCommunitySeeds after population", () => {
     // The marker stays in the manifest for an undescribed folder — the seed
     // carries it (today's status quo; a populated purpose seeds properly).
     expect(seedB?.seedText).toBe("b: (needs review)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defect-1 regression — the build pane's follow-up must go to regular chat
+// ---------------------------------------------------------------------------
+// The main.ts build-pane query closure carries a one-shot build-stage flag:
+// the FIRST question runs the stage (comprehension → population → index),
+// and every follow-up routes to regular RAG chat. This pins that contract
+// end-to-end through the router — a follow-up must NOT re-answer with the
+// summary card (old behavior) or re-run the stage.
+
+describe("build pane follow-up routing (defect 1)", () => {
+  it("first question runs the stage; the follow-up goes to regular chat", async () => {
+    const vault = makeVault({ "a/one.md": "# One\n\n" + "word ".repeat(20) });
+    tempVaults.push(vault);
+    configure(vault, { minCoverage: 0 });
+    // Cold build runs comprehension BEFORE any index exists — verify reports
+    // index "missing" and the run confirms on skim coverage.
+    setComprehensionVerifySeam({
+      embedder: { embed: async () => [0.1], embedBatch: async () => [[0.1]] },
+      db: new StubMissingIndexDb(),
+    });
+    await prepareBuild(vault);
+    const compStub = new StubLlmClient([
+      toolCallResponse("skim", {}),
+      toolCallResponse("ledger_add", { assumption: "The vault is about cooking", score: 0.6 }),
+      toolCallResponse("verify", { questions: ["What topics dominate?"] }),
+      contentOnlyResponse("The vault is a cooking recipe collection."),
+    ]);
+    setComprehensionLlmFactory(() => compStub);
+    const popStub = new StubLlmClient([contentOnlyResponse("a/ — cooking recipes\n")]);
+    setManifestPopulateLlmFactory(() => new LLMClient(AGENT_MODEL, popStub));
+    setBuildIndexSeam(async () => "Index built: 1 file");
+
+    // The main.ts build-pane closure: one-shot build-stage flag consumed on
+    // the first call, then every call delegates to the router without the
+    // stage flag.
+    let buildStagePending = true;
+    const buildQuery = async (
+      question: string,
+      ask?: Parameters<typeof runChatRouter>[1],
+    ) => {
+      const runStage = buildStagePending;
+      buildStagePending = false;
+      return runChatRouter(question, ask, runStage);
+    };
+
+    const first = await buildQuery(DEFAULT_COMPREHENSION_QUESTION);
+    expect(first.answer).toContain("The vault is a cooking recipe collection.");
+    expect(first.answer).toContain("Index built: 1 file");
+
+    // The follow-up: a fresh chat client with a distinctive answer. If the
+    // router had routed it to comprehension, the run-once card reuse would
+    // have produced the "reused from" answer instead of this chat answer.
+    openChatSession(vault);
+    const chatStub = new StubLlmClient([contentOnlyResponse("FOLLOW_UP_ANSWER")]);
+    setChatClientFactory(() => new LLMClient(AGENT_MODEL, chatStub));
+    setProbeClientFactory(() =>
+      new LLMClient("probe-model", new StubLlmClient([toolCallResponse("ping", {})])),
+    );
+
+    const second = await buildQuery("what changed?");
+    expect(second.answer).toBe("FOLLOW_UP_ANSWER");
+    expect(second.answer).not.toContain("reused from");
+    expect(chatStub.received.length).toBeGreaterThan(0);
   });
 });

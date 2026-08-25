@@ -85,4 +85,19 @@ describe("CommunitySeeds", () => {
     expect(paths.has("10_Stocks/Bloom_Energy")).toBe(true);
     expect(paths.has("10_Stocks/10_Stocks/Bloom_Energy")).toBe(false);
   });
+
+  it("stale root entries never become community seeds", () => {
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), "test-root-seeds-"));
+    fs.writeFileSync(
+      path.join(vault, "_manifest.md"),
+      "# vault\n\n## ./ <!-- (needs review) -->\n     root.md\n\n## 10_Stocks/ <!-- stock research -->\n",
+      "utf-8",
+    );
+
+    const parser = new ManifestParser(vault);
+    const seeds = parser.getCommunitySeeds(parser.findManifest());
+    expect(seeds.some(s => s.folderPath === "." || s.folderPath === "")).toBe(false);
+    expect(seeds.map(s => s.folderPath)).toEqual(["10_Stocks"]);
+    fs.rmSync(vault, { recursive: true, force: true });
+  });
 });

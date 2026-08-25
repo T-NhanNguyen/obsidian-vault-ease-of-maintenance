@@ -135,6 +135,23 @@ describe("writeSkeletonManifest", () => {
     expect(content).not.toContain("root.md");
   });
 
+  it("never renders the vault root as a folder entry", () => {
+    const vault = makeVault({
+      "root.md": "# Root",
+      "a/one.md": "# One",
+    });
+    tempVaults.push(vault);
+    configure(vault);
+
+    const written = writeSkeletonManifest(vault);
+
+    expect(written).toBe("_manifest.md");
+    const content = fs.readFileSync(path.join(vault, "_manifest.md"), "utf-8");
+    expect(content).not.toContain("## ./");
+    expect(content).not.toContain("## . ");
+    expect(content).toContain("## a/ <!-- (needs review) -->");
+  });
+
   it("never overwrites an existing manifest", () => {
     const vault = makeVault({ "a/one.md": "# One" });
     tempVaults.push(vault);
@@ -279,6 +296,36 @@ describe("populateManifestFromCard", () => {
 
     expect(stub.received).toHaveLength(0);
     expect(result).toEqual({ replaced: 0, kept: [] });
+  });
+
+  it("ignores a stale root marker and never asks the user about it", async () => {
+    const vault = makeVault({ "root.md": "# Root", "a/one.md": "# One" });
+    tempVaults.push(vault);
+    configure(vault);
+    writeCard(vault);
+    // A manifest carrying a root entry from an old DB-derived build.
+    fs.writeFileSync(
+      path.join(vault, "_manifest.md"),
+      "# vault\n\n## ./ <!-- (needs review) -->\n\n## a/ <!-- (needs review) -->\n",
+      "utf-8",
+    );
+    installPopulateStub(""); // the pass describes nothing — user channel covers leftovers
+
+    const asked: string[] = [];
+    const ask: AskQuestion = async (q) => {
+      asked.push(q.folderPath);
+      return "cooking recipes";
+    };
+    const result = await populateManifestFromCard(vault, ask);
+
+    // The root folder is never a question, and only the real folder is kept
+    // as replaced (the stale root line stays untouched and inert).
+    expect(asked).toEqual(["a"]);
+    expect(asked).not.toContain(".");
+    expect(result.replaced).toBe(1);
+    const content = fs.readFileSync(path.join(vault, "_manifest.md"), "utf-8");
+    expect(content).toContain("## a/ <!-- cooking recipes -->");
+    expect(content).toContain("## ./ <!-- (needs review) -->");
   });
 });
 

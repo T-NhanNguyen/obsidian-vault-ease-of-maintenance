@@ -11,6 +11,7 @@ import type { SettingDefinition, SettingDefinitionItem } from "obsidian";
 import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME } from "./src/config";
 import { parseConfigYaml, mergeConfigLayers } from "./src/config-yaml";
 import { errorMessage } from "./src/errors";
+import { runClearAction } from "./src/settings/clear_actions";
 import { detectToolCallSupport, probeConnection } from "./src/agent/capability";
 import { closeChatSession, closeClarifySession } from "./src/agent/chat_session";
 import {
@@ -18,13 +19,11 @@ import {
   runTriage,
   prepareBuild,
   runBuildIndex,
-  runComprehensionBuildStage,
-  runChatQuery,
-  runComprehension,
-  isComprehensionRequest,
   DEFAULT_COMPREHENSION_QUESTION,
   ProposedChange,
 } from "./src/agent/runtime";
+import { runChatRouter, chatBusyMessage } from "./src/chat_router";
+import { withChatLock } from "./src/chat_gate";
 import { VaultIO } from "./src/io/vault_io";
 import { setDefaultDbHost, createObsidianDbHost } from "./src/indexer/db_host";
 import { resetRegistry } from "./src/agent/tools";
@@ -34,7 +33,7 @@ import {
   REVIEW_VIEW_TYPE,
   ReviewView,
 } from "./src/container-sidebar";
-import type { ReviewSpec, SortResultPayload, ChatReviewSpec } from "./src/types";
+import type { ReviewSpec, SortResultPayload, ChatReviewSpec, ChatIntent } from "./src/types";
 
 // ---------------------------------------------------------------------------
 // Plugin Settings
@@ -170,10 +169,14 @@ interface SettingValueMeta extends SettingMetaBase {
   options?: Record<string, string>;
 }
 
+/** Which handler a button row runs. */
+type SettingButtonAction = "test" | "clearIndex" | "clearComprehension";
+
 /** An action row — runs a handler on click, stores nothing (no key). */
 interface SettingButtonMeta extends SettingMetaBase {
   kind: "button";
   buttonText: string;
+  action: SettingButtonAction;
 }
 
 type SettingMeta = SettingValueMeta | SettingButtonMeta;
@@ -216,6 +219,7 @@ const SETTING_META: SettingMeta[] = [
   },
   {
     kind: "button",
+    action: "test",
     name: "Test connection",
     desc: "Ping the configured API (the same probe chat's tool-call detection uses) to confirm the API key and base URL are reachable.",
     buttonText: "Test connection",
@@ -241,6 +245,20 @@ const SETTING_META: SettingMeta[] = [
     name: "Manifest filename",
     desc: "Name of the vault manifest file (default: _manifest.md).",
     placeholder: "_manifest.md",
+  },
+  {
+    kind: "button",
+    action: "clearIndex",
+    name: "Clear vault index",
+    desc: "Deletes the GraphRAG index (index.db, its sql.js sidecars) and the embedding cache so the next build starts from scratch. Derived data — rebuilt on the next build.",
+    buttonText: "Clear index",
+  },
+  {
+    kind: "button",
+    action: "clearComprehension",
+    name: "Clear comprehension data",
+    desc: "Deletes the comprehension ledger, state, skim cache, and summary card so the next build re-understands the vault. Derived data — rebuilt on the next build.",
+    buttonText: "Clear comprehension",
   },
 ];
 
@@ -407,7 +425,17 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
     setting.addButton((button) => {
       button.setButtonText(meta.buttonText);
       button.onClick(() => {
-        void this.testConnection(button.buttonEl, meta.buttonText);
+        switch (meta.action) {
+          case "test":
+            void this.testConnection(button.buttonEl, meta.buttonText);
+            return;
+          case "clearIndex":
+            void runClearAction(this.app, "index", button.buttonEl, meta.buttonText);
+            return;
+          case "clearComprehension":
+            void runClearAction(this.app, "comprehension", button.buttonEl, meta.buttonText);
+            return;
+        }
       });
     });
   }
@@ -726,8 +754,19 @@ export default class VaultMaintenancePlugin extends Plugin {
       }
       const { plan } = await prepareBuild(vaultPath);
       if (plan === "warm") {
-        const result = await runBuildIndex(vaultPath);
+        // The warm build is a headless run that shares the chat lock: while
+        // any chat-surface run is in flight it is rejected with the same
+        // busy message (protects the local LLM from concurrent load).
+        const result = await withChatLock(
+          "build",
+          () => runBuildIndex(vaultPath),
+          () => null,
+        );
         notice.hide();
+        if (result === null) {
+          new Notice(chatBusyMessage());
+          return;
+        }
         new Notice(
           `${result} — comprehension reused from the summary card; the manifest keeps its (needs review) markers.`,
         );
@@ -737,31 +776,14 @@ export default class VaultMaintenancePlugin extends Plugin {
       new Notice("Understanding the vault first — the index build will follow in the chat pane.");
       this.openReview({
         kind: "chat",
-        query: this.buildChatQuery(),
+        intent: "build",
+        query: this.chatQuery("build"),
         initialQuestion: DEFAULT_COMPREHENSION_QUESTION,
       });
     } catch (e) {
       notice.hide();
       new Notice(`Build failed: ${errorMessage(e)}`);
     }
-  }
-
-  // The cold-path build query (handoff-2 Stage 2 + 3): the first question
-  // runs the comprehension loop once, populates the manifest, and builds the
-  // index; follow-up questions reuse the fresh card (the run-once rule) and
-  // never re-run the stage. The chat's in-flight answer provider is the
-  // clarify channel for both the loop and the population's user asks.
-  private buildChatQuery(): ChatReviewSpec["query"] {
-    let built = false;
-    return async (question, ask) => {
-      if (built) {
-        return runComprehension(question, ask);
-      }
-      built = true;
-      const comprehension = await runComprehensionBuildStage(settings.vaultPath, question, ask);
-      const build = await runBuildIndex(settings.vaultPath);
-      return { ...comprehension, answer: `${comprehension.answer}\n\n${build}` };
-    };
   }
 
   async handleCleanCurrentFile(): Promise<void> {
@@ -880,7 +902,8 @@ export default class VaultMaintenancePlugin extends Plugin {
   handleChat(): void {
     const spec: ReviewSpec = {
       kind: "chat",
-      query: this.chatQuery(),
+      intent: "chat",
+      query: this.chatQuery("chat"),
     };
     this.openReview(spec);
   }
@@ -888,21 +911,26 @@ export default class VaultMaintenancePlugin extends Plugin {
   handleComprehension(): void {
     const spec: ReviewSpec = {
       kind: "chat",
-      query: this.chatQuery(),
+      intent: "chat",
+      query: this.chatQuery("chat"),
       initialQuestion: DEFAULT_COMPREHENSION_QUESTION,
     };
     this.openReview(spec);
   }
 
-  // The chat pane's query — routes the explicit "understand the vault"
-  // request to the comprehension pipeline and everything else (follow-ups
-  // like "hello" after understanding) to plain RAG chat, so a chat prompt
-  // never re-runs the whole comprehension protocol.
-  private chatQuery(): ChatReviewSpec["query"] {
-    return async (question, ask) =>
-      isComprehensionRequest(question)
-        ? runComprehension(question, ask)
-        : runChatQuery(question, ask);
+  // The chat pane's query — every intent routes through the shared router
+  // (chat_router.ts), which owns the chat lock and the routing rules. The
+  // build intent's closure carries a one-shot build-stage flag: the FIRST
+  // question runs the stage (comprehension → manifest population → index
+  // build) and every follow-up goes to regular RAG chat, so the chat is
+  // never hogged by the build (defect 1: no more follow-up hijack).
+  private chatQuery(intent: ChatIntent): ChatReviewSpec["query"] {
+    let buildStagePending = intent === "build";
+    return async (question, ask) => {
+      const runStage = buildStagePending;
+      buildStagePending = false;
+      return runChatRouter(question, ask, runStage);
+    };
   }
 }
 

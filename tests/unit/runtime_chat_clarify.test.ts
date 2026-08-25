@@ -26,6 +26,7 @@ import {
   extractClarifyTurns,
   isManifestClarifyRequest,
 } from "../../src/agent/runtime_chat";
+import { resetRegistry } from "../../src/agent/tools";
 import {
   openChatSession,
   closeChatSession,
@@ -41,6 +42,7 @@ const AGENT_MODEL = "chat-clarify-model";
 class StubLlmClient implements ILlmClient {
   private queue: ChatResponse[];
   readonly received: ChatMessage[][] = [];
+  readonly toolSets: string[][] = [];
 
   constructor(queue: ChatResponse[]) {
     this.queue = [...queue];
@@ -49,9 +51,10 @@ class StubLlmClient implements ILlmClient {
   async chatCompletion(
     _model: string,
     messages: ChatMessage[],
-    _tools?: ChatTool[] | null,
+    tools?: ChatTool[] | null,
   ): Promise<ChatResponse> {
     this.received.push(messages);
+    this.toolSets.push((tools ?? []).map((t) => t.function.name).sort());
     const next = this.queue.shift();
     if (!next) throw new Error("StubLlmClient: response queue exhausted");
     return next!;
@@ -116,6 +119,7 @@ function filesIn(vaultDir: string, relDir: string): string[] {
 beforeEach(() => {
   resetCapabilityCache();
   resetChatClientFactory();
+  resetRegistry();
   closeChatSession();
   closeClarifySession();
   updateSettings({
@@ -417,5 +421,66 @@ describe("clarify turn extraction + gate", () => {
     expect(isManifestClarifyRequest("update the manifest for the folders")).toBe(true);
     expect(isManifestClarifyRequest("check _manifest coverage")).toBe(true);
     expect(isManifestClarifyRequest("summarize my notes on IREN")).toBe(false);
+  });
+});
+
+describe("agentic write intents (T6)", () => {
+  it("the agentic loop exposes list_files, read_file, and apply_edits", async () => {
+    const vault = makeVault({ "10_Stocks": ["IREN.md"] });
+    updateSettings({ vaultPath: vault });
+    openChatSession(vault);
+
+    const chatStub = new StubLlmClient([contentOnlyResponse("hi")]);
+    setChatClientFactory(() => new LLMClient(AGENT_MODEL, chatStub));
+    setProbeClientFactory(() =>
+      new LLMClient("probe-model", new StubLlmClient([toolCallResponse("ping", {})])),
+    );
+
+    const response = await runChatQuery("hello there");
+    expect(response.answer).toBe("hi");
+    expect(chatStub.received.length).toBeGreaterThan(0);
+
+    // The toolset handed to the loop includes the three file tools (T6)
+    // alongside the existing search/cite/comprehend/clarify peers.
+    const toolset = chatStub.toolSets[0];
+    expect(toolset).toContain("list_files");
+    expect(toolset).toContain("read_file");
+    expect(toolset).toContain("apply_edits");
+    expect(toolset).toContain("search_index");
+    expect(toolset).toContain("cite_source");
+    expect(toolset).toContain("comprehend_vault");
+    expect(toolset).toContain("clarify");
+  });
+
+  it("a manifest-edit request completes via list_files → read_file → apply_edits", async () => {
+    const vault = makeVault({});
+    writeManifest(vault, GENERATED_H1 + "\n## 10_Stocks/ <!-- stock research -->\n");
+    updateSettings({ vaultPath: vault });
+    openChatSession(vault);
+    // The only file in the vault is the manifest, so its handle is f_0001
+    // (build() registers in walk order — no ambiguity).
+    resetRegistry();
+
+    const chatStub = new StubLlmClient([
+      toolCallResponse("list_files", {}),
+      toolCallResponse("read_file", { handle: "f_0001" }),
+      toolCallResponse("apply_edits", {
+        handle: "f_0001",
+        ops: [{ op: "insert_flag", anchor: { before_line: 2 }, reason: "review 10_Stocks" }],
+      }),
+      contentOnlyResponse("Updated the manifest."),
+    ]);
+    setChatClientFactory(() => new LLMClient(AGENT_MODEL, chatStub));
+    setProbeClientFactory(() =>
+      new LLMClient("probe-model", new StubLlmClient([toolCallResponse("ping", {})])),
+    );
+
+    const response = await runChatQuery("update the _manifest.md", async () => null);
+
+    expect(response.answer).toBe("Updated the manifest.");
+    // The write landed: the review flag was inserted into the manifest.
+    const manifest = fs.readFileSync(path.join(vault, "_manifest.md"), "utf-8");
+    expect(manifest).toContain("<!-- review: review 10_Stocks -->");
+    expect(chatStub.received.length).toBeGreaterThan(0);
   });
 });

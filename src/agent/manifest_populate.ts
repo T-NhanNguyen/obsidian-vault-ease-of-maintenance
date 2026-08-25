@@ -9,7 +9,7 @@
 // this module's LLM seam — it reuses the card and leaves the markers.
 
 import { settings, thinkingEnabledFor } from "../config";
-import { VaultIO } from "../io/vault_io";
+import { VaultIO, isRootFolderPath } from "../io/vault_io";
 import { errorMessage } from "../errors";
 import { SummaryCardStore, isReusableCard } from "../comprehension/summary";
 import { TocReader, TOC_HEADER } from "../indexer/manifest";
@@ -56,6 +56,7 @@ export function resetManifestPopulateLlmFactory(): void {
 function renderSkeleton(folders: VaultFolderInfo[]): string {
   const lines = [MANIFEST_H1];
   for (const folder of folders) {
+    if (isRootFolderPath(folder.path)) continue;
     const depth = folder.path.split("/").length - 1;
     lines.push(`${"##" + "#".repeat(depth)} ${folder.path}/ <!-- ${NEEDS_REVIEW} -->`);
     for (const file of folder.files) {
@@ -104,8 +105,10 @@ function findMarkerFolders(content: string): MarkerFolder[] {
   for (const line of content.split("\n")) {
     const m = TOC_HEADER.exec(line);
     if (!m || m[1].length === 1) continue; // H1 = vault root marker, not a folder
+    const path = m[2].trim().replace(/\/$/, "");
+    if (isRootFolderPath(path)) continue; // stale root entries never reach the agent
     if ((m[3] || "").trim() === NEEDS_REVIEW) {
-      markers.push({ path: m[2].trim().replace(/\/$/, ""), level: m[1].length });
+      markers.push({ path, level: m[1].length });
     }
   }
   return markers;

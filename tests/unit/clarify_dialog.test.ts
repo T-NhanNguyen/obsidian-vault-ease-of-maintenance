@@ -77,6 +77,17 @@ describe("scanVaultFolders", () => {
       { path: "20_AI", files: ["idea.md"] },
     ]);
   });
+
+  it("never returns the vault root as a folder (root-level files are not an entry)", () => {
+    const vault = makeVault({ "10_Stocks": ["IREN.md"] });
+    // A root-level markdown file — the old DB-derived manifest represented
+    // these as a root "." entry; the scan must keep pruning them.
+    fs.writeFileSync(path.join(vault, "root.md"), "# Root\n", "utf-8");
+
+    const folders = scanVaultFolders(vault, []);
+    expect(folders.map((f) => f.path)).toEqual(["10_Stocks"]);
+    expect(folders.some((f) => f.path === "." || f.path === "")).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -34,6 +34,12 @@ export interface SortReviewSpec {
     readonly result: SortResultPayload;
 }
 
+/** Which surface opened the chat spec — drives the spec key (each intent
+ * is a distinct spec so the review core can switch the pane between them)
+ * and the router's build-stage flag (the cold build's first question runs
+ * the stage; follow-ups go to regular chat). */
+export type ChatIntent = "chat" | "build";
+
 export interface ChatReviewSpec {
     readonly kind: "chat";
     /** The ask parameter is the chat UI's in-flight answer provider (the
@@ -46,6 +52,11 @@ export interface ChatReviewSpec {
     /** Optional question to auto-submit once the pane renders (a command
      * like "Understand vault" starts its run immediately). */
     readonly initialQuestion?: string;
+    /** The chat surface that opened the spec (defaults to plain chat).
+     * Build-cold chat carries "build" so its spec key differs from the
+     * understand-vault command's — opening one while the other is mounted
+     * re-renders the pane instead of silently keeping the old query. */
+    readonly intent?: ChatIntent;
 }
 
 export type ReviewSpec = CleanReviewSpec | SortReviewSpec | ChatReviewSpec;
@@ -57,10 +68,12 @@ export function specKey(spec: ReviewSpec): string {
         case "sort":
             return `sort:${spec.id}`;
         case "chat":
-            // Intent-aware: the plain chat command and the understand-vault
-            // command (auto-submitting an initial question) are distinct
-            // specs so the review core can switch the pane between them.
-            return spec.initialQuestion ? `chat:${spec.initialQuestion}` : "chat";
+            // Intent-aware: the plain chat command, the understand-vault
+            // command, and the cold build's chat are distinct specs (each
+            // has its own intent and/or auto-submitted initial question) so
+            // the review core can switch the pane between them. The key
+            // always carries the intent and the initial question.
+            return `chat:${spec.intent ?? "chat"}:${spec.initialQuestion ?? "plain"}`;
     }
 }
 

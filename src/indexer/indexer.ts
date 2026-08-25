@@ -23,8 +23,9 @@ import { ManifestParser } from "./manifest";
 import { FileInfo, Scanner } from "./scanner";
 
 /** Sidecar checkpoint filename — a sibling of index.db that survives both
- * clearAll() and retireLegacyIndex() (see embedding_cache.ts). */
-const EMBEDDING_CACHE_FILENAME = "embedding-cache.json";
+ * clearAll() and retireLegacyIndex() (see embedding_cache.ts). Exported for
+ * the Settings-tab clear-data actions (src/io/clear_data.ts). */
+export const EMBEDDING_CACHE_FILENAME = "embedding-cache.json";
 
 // Journal replay entry — journal rows written by the sort pipeline.
 interface JournalEntryRecord {

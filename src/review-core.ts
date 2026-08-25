@@ -79,11 +79,14 @@ export class ReviewCore {
             // (file deleted). Reopening starts a fresh session.
             closeChatSession();
             this.chatRendered = false;
-            if (this.activeSpecKey === "chat") this.activeSpecKey = null;
-        } else if (this.activeSpecKey !== "chat") {
+            // Any chat-* key (plain chat, understand-vault, build) belongs
+            // to the closed tab — forget it so the next open re-renders.
+            if (this.activeSpecKey?.startsWith("chat")) this.activeSpecKey = null;
+        } else if (!this.activeSpecKey?.startsWith("chat")) {
             // Clean/sort share the pending tab; closing it clears the chat
             // tab's clarify Q&A session too (the clarify namespace is closed
-            // with the tab that owns the dialog).
+            // with the tab that owns the dialog). A chat spec belongs to the
+            // chat tab and survives a pending-tab close.
             closeClarifySession();
             this.activeSpecKey = null;
         }

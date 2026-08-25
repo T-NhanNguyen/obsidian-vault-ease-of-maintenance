@@ -2,7 +2,7 @@
 // Ported from src/indexer/manifest.py
 
 import * as crypto from "crypto";
-import { VaultIO } from "../io/vault_io";
+import { VaultIO, isRootFolderPath } from "../io/vault_io";
 import { settings } from "../config";
 import { CommunitySeed } from "./communities";
 
@@ -117,6 +117,9 @@ export class TocReader {
           current = null;
           continue;
         }
+        // Stale root entries (`## ./` from old DB-derived manifests) are not
+        // real folders — never parse them into entries/seeds.
+        if (isRootFolderPath(text)) continue;
         const entry = new ManifestEntry(text, comment);
         while (stack.length > 0 && stackLevels[stackLevels.length - 1] >= level) {
           stack.pop();

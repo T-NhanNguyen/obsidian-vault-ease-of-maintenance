@@ -96,14 +96,22 @@ describe("computeStatus — insufficient_evidence", () => {
     expect(evalStatus([entry("a1", 0.9)], 0.5, 1).status).toBe("insufficient_evidence");
   });
 
-  it("flags a missing index once verification is attempted", () => {
+  it("confirms on skim coverage when the index is unavailable (verification skipped)", () => {
     const result = evalStatus([entry("a1", 0.9)], 1, 1, false);
-    expect(result.status).toBe("insufficient_evidence");
+    expect(result.status).toBe("confirmed");
     expect(result.reason).toContain("index");
   });
 
-  it("does not flag a missing index before any verify round", () => {
-    expect(evalStatus([entry("a1", 0.9)], 1, 0, false).status).not.toBe("insufficient_evidence");
+  it("confirms without any verify round when the index is unavailable", () => {
+    expect(evalStatus([entry("a1", 0.9)], 1, 0, false).status).toBe("confirmed");
+  });
+
+  it("still flags low coverage when the index is unavailable", () => {
+    expect(evalStatus([entry("a1", 0.9)], 0.3, 1, false).status).toBe("insufficient_evidence");
+  });
+
+  it("still flags an empty ledger when the index is unavailable", () => {
+    expect(evalStatus([], 1, 1, false).status).toBe("insufficient_evidence");
   });
 
   it("flags an empty ledger", () => {

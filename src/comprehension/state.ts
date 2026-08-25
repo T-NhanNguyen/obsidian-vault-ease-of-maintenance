@@ -129,8 +129,11 @@ export function leadingEntries(entries: LedgerEntry[], top: number = 2): LedgerE
 
 /**
  * Deterministic status evaluation. Priority order (each step returns with its
- * reason string): conflicted → insufficient_evidence → confirmed →
- * low_confidence → needs_verification.
+ * reason string): conflicted → insufficient_evidence (coverage / empty ledger)
+ * → confirmed. When the index is unavailable, verification is impossible, not
+ * a failure: a coverage-adequate run with assumptions confirms with a
+ * verification-skipped reason (the manifest-first cold build runs comprehension
+ * BEFORE any index exists — handoff-2 — so verify reports index "missing").
  */
 export function computeStatus(
   entries: LedgerEntry[],
@@ -148,13 +151,6 @@ export function computeStatus(
     };
   }
 
-  if (!indexAvailable && verifyRounds > 0) {
-    return {
-      status: "insufficient_evidence",
-      reason: "The GraphRAG index is unavailable — the verify phase cannot retrieve evidence. Ask the user for a keyword, folder, or starting note.",
-    };
-  }
-
   if (coverage < opts.minCoverage) {
     return {
       status: "insufficient_evidence",
@@ -166,6 +162,13 @@ export function computeStatus(
     return {
       status: "insufficient_evidence",
       reason: "No assumptions recorded yet. Ask the user for a keyword, folder, or starting note.",
+    };
+  }
+
+  if (!indexAvailable) {
+    return {
+      status: "confirmed",
+      reason: `Coverage (${coverage.toFixed(2)}) meets the minimum (${opts.minCoverage}) but the GraphRAG index is unavailable — verification against retrieval evidence was skipped (the build creates it). Confirm and emit the final synthesis.`,
     };
   }
 

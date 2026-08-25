@@ -17,6 +17,12 @@ import {
   searchIndex,
   resetChatSearchRegistry,
   getChatSearchResults,
+  LIST_FILES_TOOL,
+  listFiles,
+  READ_FILE_TOOL,
+  readFile,
+  APPLY_EDITS_TOOL,
+  applyEdits,
   withClarify,
   NO_ANSWER_MARKER_PREFIX,
   type ClarifyAnswerProvider,
@@ -183,6 +189,30 @@ async function runChatQueryAgentic(
     citeSource,
   );
 
+  // Write intents (T6): the agentic loop can read and edit vault files
+  // directly — list_files to find handles, read_file to inspect before
+  // editing, apply_edits (the ONLY mutation tool, receipt-verified) to
+  // apply changes — so a task like "update the _manifest.md" completes
+  // inside the run instead of stalling on a manual instruction.
+  const listFilesTool = new Tool(
+    LIST_FILES_TOOL.name,
+    LIST_FILES_TOOL.description,
+    LIST_FILES_TOOL.parameters,
+    (args) => listFiles(typeof args.path === "string" ? args.path : ""),
+  );
+  const readFileTool = new Tool(
+    READ_FILE_TOOL.name,
+    READ_FILE_TOOL.description,
+    READ_FILE_TOOL.parameters,
+    (args) => readFile(typeof args.handle === "string" ? args.handle : ""),
+  );
+  const applyEditsTool = new Tool(
+    APPLY_EDITS_TOOL.name,
+    APPLY_EDITS_TOOL.description,
+    APPLY_EDITS_TOOL.parameters,
+    applyEdits,
+  );
+
   // The clarify tool is a peer of search/cite — same Tool class, appended
   // through the shared compose helper. The ask wrapper is the chat answer
   // channel; it also records Q&A turns in the clarify conversation
@@ -193,7 +223,10 @@ async function runChatQueryAgentic(
     if (answer) appendClarifyTurn(settings.vaultPath, "user", answer);
     return answer;
   };
-  const tools = withClarify([searchTool, citeTool, buildComprehendVaultTool()], chatAsk);
+  const tools = withClarify(
+    [searchTool, citeTool, buildComprehendVaultTool(), listFilesTool, readFileTool, applyEditsTool],
+    chatAsk,
+  );
 
   // Manifest task context: the model needs the uncovered-folder list to ask
   // about them (harness §flow step 2). Computed once per run and reused for

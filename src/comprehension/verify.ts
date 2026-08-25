@@ -23,8 +23,9 @@ export interface VerifyQuestionResult {
 }
 
 export interface VerifyResult {
-  /** "missing" when the index holds no sections — the runtime maps this to
-   * status insufficient_evidence (mandatory clarification). */
+  /** "missing" when the index holds no sections — the runtime then skips
+   * verification and confirms on skim+ledger coverage alone (the cold build
+   * path has no index yet; the build that follows creates it). */
   index: "ok" | "missing";
   results: VerifyQuestionResult[];
 }

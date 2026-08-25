@@ -267,3 +267,12 @@ export class VaultIO {
     return path.join(path.dirname(targetAbs), tmpName);
   }
 }
+
+/** True when a vault-relative path denotes the vault ROOT (not a real
+ * folder). Node's path.dirname returns "." for bare filenames, so root
+ * entries can leak into folder scans / manifests as "." or "./"; every
+ * consumer that derives folder lists must prune these before rendering or
+ * prompting (the root has no manifest purpose line). */
+export function isRootFolderPath(relPath: string): boolean {
+  return relPath === "" || relPath === "." || relPath === "./" || relPath === "/";
+}
