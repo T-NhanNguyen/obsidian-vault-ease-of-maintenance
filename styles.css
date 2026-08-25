@@ -481,6 +481,16 @@
     font-weight: 600;
     color: var(--text-muted);
     margin: 6px 0 4px;
+    cursor: pointer;
+}
+
+.nm-sources-title:hover {
+    color: var(--text-normal);
+}
+
+.nm-sources-title:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 1px;
 }
 
 .nm-source {

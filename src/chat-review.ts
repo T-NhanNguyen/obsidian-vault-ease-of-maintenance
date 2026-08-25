@@ -16,6 +16,7 @@ import type { ClarifyProposal } from "./agent/clarify";
 
 const CHAT_TITLE = "Chat";
 const INPUT_PLACEHOLDER = "Ask about your vault…";
+const SOURCES_LABEL = "Sources";
 const ANSWER_PLACEHOLDER = "Answer the question above… (Esc to skip)";
 const SEND_BUTTON_LABEL = "Ask";
 const LOADING_LABEL = "Thinking…";
@@ -239,8 +240,11 @@ function renderSources(
     citationMap?: Record<number, number>
 ): void {
     if (!results.length) return;
-    const sources = answerEl.createDiv({ cls: "nm-sources" });
-    sources.createDiv({ cls: "nm-sources-title", text: "Sources" });
+    const sources = answerEl.createEl("details", { cls: "nm-sources" });
+    sources.createEl("summary", {
+        cls: "nm-sources-title",
+        text: `${SOURCES_LABEL} (${results.length})`,
+    });
     results.forEach((result, index) => {
         const source = sources.createDiv({ cls: "nm-source nm-source-clickable" });
         source.setAttr("role", "button");
@@ -287,6 +291,10 @@ function wireCitationNavigation(answerEl: HTMLElement, citationMap?: Record<numb
         const resultIndex = citationMap?.[citationNumber] ?? citationNumber - 1;
         const source = answerEl.querySelector(`[data-source-index="${resultIndex}"]`);
         if (!source) return;
+        // The sources section is a collapsed <details> — open it first so the
+        // target row exists on screen (a hidden row cannot be scrolled to).
+        const details = source.closest("details");
+        if (details) details.open = true;
         source.scrollIntoView({ behavior: "smooth", block: "center" });
         source.addClass("nm-source-flash");
         window.setTimeout(() => source.removeClass("nm-source-flash"), 1600);
