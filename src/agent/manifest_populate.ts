@@ -8,7 +8,7 @@
 // writes through the guarded marker replacement. The warm path never calls
 // this module's LLM seam — it reuses the card and leaves the markers.
 
-import { settings, thinkingEnabledFor } from "../config";
+import { settings } from "../config";
 import { VaultIO, isRootFolderPath } from "../io/vault_io";
 import { errorMessage } from "../errors";
 import { SummaryCardStore, isReusableCard } from "../comprehension/summary";
@@ -191,7 +191,7 @@ export async function populateManifestFromCard(
   try {
     const client = manifestPopulateLlmFactory
       ? manifestPopulateLlmFactory()
-      : new LLMClient(undefined, undefined, { enableThinking: thinkingEnabledFor("build") });
+      : new LLMClient();
     const [response] = await client.chat(
       readPromptSection(manifestPopulateMd, "Populate system"),
       fillTemplate(readPromptSection(manifestPopulateMd, "Populate user"), {

@@ -2,7 +2,7 @@
 // runtime.ts so adjusting the chat concern does not touch the cleanup/sort/
 // build orchestrators.
 
-import { settings, thinkingEnabledFor } from "../config";
+import { settings } from "../config";
 import { errorMessage } from "../errors";
 import { LLMClient, Tool } from "./llm";
 import { reconstructAnswer } from "./chat_context";
@@ -94,9 +94,7 @@ export async function runChat(question: string): Promise<string> {
     .map(r => `From ${r.filePath} (${r.headingPath}, lines ${r.lineStart}-${r.lineEnd}):\n${r.text}`)
     .join("\n\n");
 
-  const [answer] = await new LLMClient(undefined, undefined, {
-    enableThinking: thinkingEnabledFor("chat"),
-  }).chat(
+  const [answer] = await new LLMClient().chat(
     CHAT_SYSTEM_PROMPT,
     `Context:\n${ctx}\n\nQuestion: ${question}`,
     null,
@@ -135,7 +133,7 @@ export async function runChatQuery(
       result = await globalQuery(
         embedder,
         db,
-        new ChatReportLlm({ enableThinking: thinkingEnabledFor("chat") }),
+        new ChatReportLlm(),
         question,
         { topReports: settings.query?.topReports },
       );
@@ -248,9 +246,7 @@ async function runChatQueryAgentic(
   try {
     const client = chatClientFactory
       ? chatClientFactory()
-      : new LLMClient(undefined, undefined, {
-          enableThinking: thinkingEnabledFor("chat"),
-        });
+      : new LLMClient();
     const [, rawHistory] = await client.chat(
       systemPrompt,
       question,
@@ -408,9 +404,7 @@ async function runChatQueryFallback(
     // History contract: only user/assistant turns are stored (see
     // chat_session.ts). Retrieval context is piped into THIS request only —
     // it is never appended, so history stays bounded to 15 Q&A messages.
-    const [response] = await new LLMClient(undefined, undefined, {
-      enableThinking: thinkingEnabledFor("chat"),
-    }).chat(
+    const [response] = await new LLMClient().chat(
       CHAT_GROUNDED_SYSTEM_PROMPT,
       `Notes:\n${context}\n\nQuestion: ${question}`,
       null,

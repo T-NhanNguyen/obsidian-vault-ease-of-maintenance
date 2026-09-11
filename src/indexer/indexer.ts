@@ -21,6 +21,9 @@ import { Embedder, IEmbedder } from "./embedder";
 import { GraphBuilder } from "./graph";
 import { ManifestParser } from "./manifest";
 import { FileInfo, Scanner } from "./scanner";
+import { elapsedSeconds, formatSeconds } from "../progress";
+import { debugLog } from "../debug";
+import type { BuildProgressCallback } from "../types";
 
 /** Sidecar checkpoint filename — a sibling of index.db that survives both
  * clearAll() and retireLegacyIndex() (see embedding_cache.ts). Exported for
@@ -32,6 +35,94 @@ interface JournalEntryRecord {
   verdict?: string;
   file_path?: string;
   old_path?: string;
+}
+
+/** Phase-1 output: the core index plus the sections phase 2 enriches. */
+interface CoreIndexResult {
+  fileCount: number;
+  sections: SectionInfo[];
+}
+
+/** Phase-2 start message — one source of truth for the enrichment label. */
+const ENRICHMENT_STARTED_MESSAGE = "Enrichment started: entity extraction and community reports.";
+
+/** Failure note shared by every index write leg: on a throw the in-memory
+ * mutations are discarded, so whatever was on disk survives. */
+const STALE_INDEX_NOTE =
+  "no new index was written; any previous index is untouched and may be stale.";
+
+function coreIndexReadyMessage(fileCount: number, seconds: number): string {
+  return `Core index ready: ${fileCount} files in ${formatSeconds(seconds)}. Retrieval works now.`;
+}
+
+function enrichmentDoneMessage(communityCount: number, seconds: number): string {
+  return `Enrichment done: ${communityCount} communities in ${formatSeconds(seconds)}.`;
+}
+
+function enrichmentFailedMessage(error: string): string {
+  return `Enrichment failed: ${error}. The core index still works.`;
+}
+
+function enrichmentExtractionProgressMessage(completed: number, total: number): string {
+  return `Enrichment: entity extraction ${completed}/${total}.`;
+}
+
+function enrichmentReportProgressMessage(completed: number, total: number): string {
+  return `Enrichment: community reports ${completed}/${total}.`;
+}
+
+function enrichmentExtractionStartMessage(
+  model: string,
+  batch: number,
+  total: number,
+  sections: number,
+  tokens: number,
+): string {
+  return `Enrichment: entity extraction ${batch}/${total} — calling ${model} ` +
+    `(${sections} sections, ~${tokens} tokens)…`;
+}
+
+function enrichmentExtractionWaitMessage(batch: number, total: number, seconds: number): string {
+  return `Enrichment: entity extraction ${batch}/${total} — still waiting (${formatSeconds(seconds)})…`;
+}
+
+function enrichmentReportStartMessage(
+  model: string,
+  index: number,
+  total: number,
+  label: string,
+  sections: number,
+): string {
+  return `Enrichment: community reports ${index}/${total} — calling ${model} ` +
+    `(${label}, ${sections} sections)…`;
+}
+
+function enrichmentReportWaitMessage(index: number, total: number, seconds: number): string {
+  return `Enrichment: community reports ${index}/${total} — still waiting (${formatSeconds(seconds)})…`;
+}
+
+// Truncation lines are permanent (kind "status"): they must survive the
+// per-call progress lines that keep rewriting the same transient element.
+function enrichmentExtractionTruncatedMessage(batch: number, total: number): string {
+  return `Enrichment: entity extraction ${batch}/${total} hit the output cap — the incomplete ` +
+    `final line was dropped (raise extraction.max_output_tokens if this repeats).`;
+}
+
+function enrichmentReportTruncatedMessage(index: number, total: number): string {
+  return `Enrichment: community reports ${index}/${total} hit the output cap — the incomplete ` +
+    `final line was dropped (raise reports.max_output_tokens if this repeats).`;
+}
+
+function coreIndexFailedMessage(error: string): string {
+  return `Core index failed: ${error} — ${STALE_INDEX_NOTE}`;
+}
+
+function incrementalFailedMessage(error: string): string {
+  return `Incremental update failed: ${error} — ${STALE_INDEX_NOTE}`;
+}
+
+function journalReplayFailedMessage(error: string): string {
+  return `Journal replay failed: ${error} — ${STALE_INDEX_NOTE}`;
 }
 
 /** SectionInfo → the extraction module's minimal section shape. */
@@ -82,108 +173,191 @@ export class Indexer {
   }
 
   // ------------------------------------------------------------------
-  // Cold build
+  // Cold build — two phases
   // ------------------------------------------------------------------
 
-  async build(): Promise<void> {
-    try {
-      await this.db.initialize();
-      await this.db.clearAll();
+  /**
+   * Phase 1 — the core index (embedding model only): clear, seed, embed,
+   * scan, chunk, upsert, structural edges, communities, meta. Ends with a
+   * CHECKPOINT so retrieval works before the slow LLM enrichment starts.
+   */
+  private async buildCoreIndex(): Promise<CoreIndexResult> {
+    await this.db.initialize();
+    await this.db.clearAll();
 
-      const manifestPath = this.manifestParser.findManifest();
-      const seeds = this.manifestParser.getCommunitySeeds(manifestPath);
-      const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
-      const manifestHash = this.manifestParser.hashManifest(manifestPath);
+    const manifestPath = this.manifestParser.findManifest();
+    const seeds = this.manifestParser.getCommunitySeeds(manifestPath);
+    const contentTypeDefaults = this.manifestParser.getContentTypeDefaults(manifestPath);
+    const manifestHash = this.manifestParser.hashManifest(manifestPath);
 
-      // Insert manifest-based communities
-      for (const seed of seeds) {
-        await this.db.insertCommunity({
-          communityId: seed.communityId,
-          seedSource: seed.seedSource,
-          label: seed.label,
-        });
-      }
-
-      // Seed embedding for community assignment
-      const seedEmbeddings = await computeSeedEmbeddings(this.embedder, seeds);
-
-      // Load the embedding cache once, before the file loop — an interrupted
-      // build that already flushed files 1..N re-embeds only the rest
-      // (drop-and-return; see embedding_cache.ts).
-      await this.embeddingCache.load({
-        model: this.settings.embedding.model,
-        dimensions: this.settings.embedding.dimensions,
+    // Insert manifest-based communities
+    for (const seed of seeds) {
+      await this.db.insertCommunity({
+        communityId: seed.communityId,
+        seedSource: seed.seedSource,
+        label: seed.label,
       });
+    }
 
-      // Scan and index files
-      const files = this.scanner.scan();
-      const filePaths = new Set(files.map(f => f.path));
-      const allSections: SectionInfo[] = [];
+    // Seed embedding for community assignment
+    const seedEmbeddings = await computeSeedEmbeddings(this.embedder, seeds);
 
-      for (const fileInfo of files) {
-        if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
-        const sections = await this.indexFile(fileInfo, filePaths, contentTypeDefaults);
-        allSections.push(...sections);
+    // Load the embedding cache once, before the file loop — an interrupted
+    // build that already flushed files 1..N re-embeds only the rest
+    // (drop-and-return; see embedding_cache.ts).
+    await this.embeddingCache.load({
+      model: this.settings.embedding.model,
+      dimensions: this.settings.embedding.dimensions,
+    });
+
+    // Scan and index files
+    const files = this.scanner.scan();
+    const filePaths = new Set(files.map(f => f.path));
+    const allSections: SectionInfo[] = [];
+
+    for (const fileInfo of files) {
+      if (path.basename(fileInfo.path) === this.settings.manifest.filename) continue;
+      const sections = await this.indexFile(fileInfo, filePaths, contentTypeDefaults);
+      allSections.push(...sections);
+    }
+
+    // Compute edges
+    await this.graph.computeAllEdges(allSections, filePaths);
+
+    // Assign sections to communities — seeded vaults keep the cosine
+    // assignment; unseeded vaults get auto-clustered communities so every
+    // vault has communities (Phase 3 of the GraphRAG buildout).
+    if (seeds.length > 0) {
+      await assignCommunities(this.db, allSections, seeds, seedEmbeddings);
+    } else {
+      await ensureAutoCommunities(
+        this.db,
+        allSections,
+        this.settings.graph?.clusterThreshold,
+      );
+    }
+
+    // Insert metadata
+    await this.db.insertMeta(`vault:${files.length}files`, manifestHash);
+
+    // Phase-1 checkpoint: the core index is durable and retrievable before
+    // phase 2 spends minutes on the reasoning model.
+    await this.db.checkpoint();
+
+    return { fileCount: files.length, sections: allSections };
+  }
+
+  /**
+   * Phase 2 — LLM enrichment: semantic entity extraction then community
+   * reports. Each leg is independently non-fatal; a failure is returned as
+   * a message so the caller can report it and keep the core index usable.
+   */
+  private async enrichIndex(
+    sections: SectionInfo[],
+    onProgress?: BuildProgressCallback,
+  ): Promise<string[]> {
+    const failures: string[] = [];
+
+    // LLM entity extraction — typed entities + relationships → semantic
+    // EDGES (Phase 5 of the GraphRAG buildout). Optional like the report
+    // pass: wired only when an LLM was given (production passes
+    // ChatReportLlm; the test harness passes none → regex-only graph,
+    // zero HTTP). Failure is non-fatal: the regex tier stays the baseline
+    // and the index remains usable — semantic edges simply stay absent.
+    if (this.extractionLlm) {
+      const model = this.settings.agent.model || "the model";
+      try {
+        await generateSemanticGraph(this.db, this.extractionLlm, groupSectionsByFile(sections), {
+          // `?.` guard: partial Settings in tests degrade to the module
+          // default (DEFAULT_EXTRACTION_CONTEXT_CAP_TOKENS).
+          contextCapTokens: this.settings.extraction?.contextCapTokens,
+          maxOutputTokens: this.settings.extraction?.maxOutputTokens,
+          onBatchStart: (batch, total, sectionCount, tokens) =>
+            onProgress?.(enrichmentExtractionStartMessage(model, batch, total, sectionCount, tokens), "progress"),
+          onCallWait: (batch, total, seconds) =>
+            onProgress?.(enrichmentExtractionWaitMessage(batch, total, seconds), "progress"),
+          onBatchProgress: (completed, total) =>
+            onProgress?.(enrichmentExtractionProgressMessage(completed, total), "progress"),
+          onBatchTruncated: (batch, total) =>
+            onProgress?.(enrichmentExtractionTruncatedMessage(batch, total)),
+        });
+      } catch (e) {
+        const message = errorMessage(e);
+        failures.push(message);
+        console.warn(`[build] LLM entity extraction failed (${message}) — graph stays regex-only.`);
       }
+    }
 
-      // Compute edges
-      await this.graph.computeAllEdges(allSections, filePaths);
-
-      // LLM entity extraction — typed entities + relationships → semantic
-      // EDGES (Phase 5 of the GraphRAG buildout). Optional like the report
-      // pass: wired only when an LLM was given (production passes
-      // ChatReportLlm; the test harness passes none → regex-only graph,
-      // zero HTTP). Failure is non-fatal: the regex tier stays the baseline
-      // and the index remains usable — semantic edges simply stay absent.
-      if (this.extractionLlm) {
-        try {
-          await generateSemanticGraph(this.db, this.extractionLlm, groupSectionsByFile(allSections), {
-            // `?.` guard: partial Settings in tests degrade to the module
-            // default (DEFAULT_EXTRACTION_CONTEXT_CAP_TOKENS).
-            contextCapTokens: this.settings.extraction?.contextCapTokens,
-          });
-        } catch (e) {
-          console.warn(
-            `[build] LLM entity extraction failed (${errorMessage(e)}) — graph stays regex-only.`,
-          );
-        }
+    // Community reports — LLM-written per-community summaries for global
+    // mode (Phase 4 of the GraphRAG buildout). Generated only when an LLM
+    // was wired in (the production orchestrator passes ChatReportLlm; the
+    // test harness passes none). Failure is non-fatal: reports stay absent
+    // (or partial) and the index remains usable — global mode then degrades
+    // to local retrieval.
+    if (this.reportLlm) {
+      const model = this.settings.agent.model || "the model";
+      try {
+        await generateCommunityReports(this.db, this.reportLlm, {
+          // `?.` guard: partial Settings in tests degrade to the module
+          // default (DEFAULT_REPORT_CONTEXT_CAP_TOKENS).
+          contextCapTokens: this.settings.reports?.contextCapTokens,
+          maxOutputTokens: this.settings.reports?.maxOutputTokens,
+          onCommunityStart: (index, total, label, sectionCount) =>
+            onProgress?.(enrichmentReportStartMessage(model, index, total, label, sectionCount), "progress"),
+          onCommunityWait: (index, total, seconds) =>
+            onProgress?.(enrichmentReportWaitMessage(index, total, seconds), "progress"),
+          onCommunityProgress: (completed, total) =>
+            onProgress?.(enrichmentReportProgressMessage(completed, total), "progress"),
+          onCommunityTruncated: (index, total) =>
+            onProgress?.(enrichmentReportTruncatedMessage(index, total)),
+        });
+      } catch (e) {
+        const message = errorMessage(e);
+        failures.push(message);
+        console.warn(`[build] Community report generation failed (${message}) — global mode unavailable.`);
       }
+    }
 
-      // Assign sections to communities — seeded vaults keep the cosine
-      // assignment; unseeded vaults get auto-clustered communities so every
-      // vault has communities (Phase 3 of the GraphRAG buildout).
-      if (seeds.length > 0) {
-        await assignCommunities(this.db, allSections, seeds, seedEmbeddings);
+    return failures;
+  }
+
+  /**
+   * Two-phase cold build. Phase 1 checkpoints a usable core index; phase 2
+   * enriches it with the reasoning model. Each phase boundary is reported
+   * through the optional onProgress callback (the chat status channel).
+   */
+  async build(onProgress?: BuildProgressCallback): Promise<void> {
+    const buildStartedAt = Date.now();
+    let coreIndexBuilt = false;
+    try {
+      const core = await this.buildCoreIndex();
+      coreIndexBuilt = true;
+      debugLog("build", `phase 1 done: ${core.fileCount} files in ${Date.now() - buildStartedAt}ms`);
+      onProgress?.(coreIndexReadyMessage(core.fileCount, elapsedSeconds(buildStartedAt)));
+
+      onProgress?.(ENRICHMENT_STARTED_MESSAGE);
+      debugLog("build", "phase 2 started: entity extraction then community reports");
+      const enrichmentStartedAt = Date.now();
+      const failures = await this.enrichIndex(core.sections, onProgress);
+      if (failures.length > 0) {
+        debugLog("build", `phase 2 failed: ${failures.join("; ")}`);
+        onProgress?.(enrichmentFailedMessage(failures.join("; ")));
       } else {
-        await ensureAutoCommunities(
-          this.db,
-          allSections,
-          this.settings.graph?.clusterThreshold,
-        );
+        const communityCount = (await this.db.getAllCommunities()).length;
+        debugLog("build", `phase 2 done: ${communityCount} communities in ${Date.now() - enrichmentStartedAt}ms`);
+        onProgress?.(enrichmentDoneMessage(communityCount, elapsedSeconds(enrichmentStartedAt)));
       }
-
-      // Community reports — LLM-written per-community summaries for global
-      // mode (Phase 4 of the GraphRAG buildout). Generated only when an LLM
-      // was wired in (the production orchestrator passes ChatReportLlm; the
-      // test harness passes none). Failure is non-fatal: reports stay absent
-      // (or partial) and the index remains usable — global mode then degrades
-      // to local retrieval.
-      if (this.reportLlm) {
-        try {
-          await generateCommunityReports(this.db, this.reportLlm, {
-            // `?.` guard: partial Settings in tests degrade to the module
-            // default (DEFAULT_REPORT_CONTEXT_CAP_TOKENS).
-            contextCapTokens: this.settings.reports?.contextCapTokens,
-          });
-        } catch (e) {
-          console.warn(
-            `[build] Community report generation failed (${errorMessage(e)}) — global mode unavailable.`,
-          );
-        }
+    } catch (e) {
+      // Before the checkpoint the in-memory index is cleared or partial:
+      // discard it instead of letting close() export it over the vault file
+      // (the previous index survives, stale but usable). After the
+      // checkpoint the core index is already durable, so close() still
+      // flushes whatever enrichment landed.
+      if (!coreIndexBuilt) {
+        this.db.dispose();
+        throw new Error(coreIndexFailedMessage(errorMessage(e)));
       }
-
-      // Insert metadata
-      await this.db.insertMeta(`vault:${files.length}files`, manifestHash);
+      throw e;
     } finally {
       await this.db.close();
     }
@@ -333,6 +507,11 @@ export class Indexer {
       }
 
       await this.db.insertMeta(`vault:${files.length}files`, manifestHash);
+    } catch (e) {
+      // A half-applied incremental would leave the index inconsistent —
+      // discard it and keep the previous full index on disk.
+      this.db.dispose();
+      throw new Error(incrementalFailedMessage(errorMessage(e)));
     } finally {
       await this.db.close();
     }
@@ -388,6 +567,11 @@ export class Indexer {
         const affectedSections = allSections.filter(s => affectedFiles.has(s.fileId));
         await this.graph.computeEdgesForFiles(affectedSections, affectedFiles, allSections, filePaths);
       }
+    } catch (e) {
+      // Same rule as incremental(): a partial replay must not overwrite the
+      // previous full index.
+      this.db.dispose();
+      throw new Error(journalReplayFailedMessage(errorMessage(e)));
     } finally {
       await this.db.close();
     }

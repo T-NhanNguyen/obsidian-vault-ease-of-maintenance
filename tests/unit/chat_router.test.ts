@@ -222,6 +222,39 @@ describe("runChatRouter build stage", () => {
     expect(chatLockHolder()).toBeNull();
   });
 
+  it("forwards onProgress through the comprehension prefix and the index stage", async () => {
+    const vault = makeVault({ "a/one.md": "# One\n\n" + "word ".repeat(20) });
+    tempVaults.push(vault);
+    configure(vault, { minCoverage: 0 });
+    installVerifySeam();
+    await prepareBuild(vault);
+    setComprehensionLlmFactory(() => new StubLlmClient(coldRunQueue()));
+    setManifestPopulateLlmFactory(() =>
+      new LLMClient(AGENT_MODEL, new StubLlmClient([contentOnlyResponse("a/ — cooking recipes\n")])),
+    );
+    setBuildIndexSeam(async (onProgress) => {
+      onProgress?.("Core index ready: 1 files in 0s. Retrieval works now.");
+      return "Index built: 1 file";
+    });
+
+    const progress: string[] = [];
+    await runChatRouter(DEFAULT_COMPREHENSION_QUESTION, undefined, true, (message) =>
+      progress.push(message),
+    );
+
+    // Comprehension runs BEFORE the index build and used to be silent, so the
+    // chat showed only "Thinking…" for minutes. It now reports its turns.
+    const turnIdx = progress.findIndex((m) => /^Comprehension: turn \d+\/\d+ \(\d+\/\d+ tool calls\)\.$/.test(m));
+    expect(turnIdx).toBeGreaterThanOrEqual(0);
+    const indexIdx = progress.indexOf("Core index ready: 1 files in 0s. Retrieval works now.");
+    expect(indexIdx).toBeGreaterThan(turnIdx);
+    // The stage rollup closes the run — the phase message alone hides the
+    // comprehension prefix that precedes the index build.
+    expect(progress[progress.length - 1]).toMatch(
+      /^Build stage done in \d+s \(comprehension\+manifest \d+s, index \d+s\)\.$/,
+    );
+  });
+
   it("routes a follow-up question to REGULAR chat, not comprehension or the stage (defect 1)", async () => {
     const vault = makeVault({ "a/one.md": "# One\n\n" + "word ".repeat(20) });
     tempVaults.push(vault);

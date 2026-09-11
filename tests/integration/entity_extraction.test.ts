@@ -26,6 +26,7 @@ import { Settings, defaultSettings } from "../../src/config";
 import { Indexer } from "../../src/indexer/indexer";
 import { DatabaseManager } from "../../src/indexer/db";
 import { entityId } from "../../src/indexer/graph";
+import type { BuildProgressCallback } from "../../src/types";
 import type { ReportLlm, ReportLlmResult } from "../../src/indexer/community_reports";
 
 let SQL: Awaited<ReturnType<typeof initSqlJs>>;
@@ -135,12 +136,13 @@ const DISTINCT_FILES: Record<string, string> = {
 // Deterministic LLM seams
 // ---------------------------------------------------------------------------
 
-/** Extraction LLM — queued contract responses (one per batch/call). */
+/** Extraction LLM — queued contract responses (one per batch/call).
+ * `finishReason` models a provider that hit the output cap ("length"). */
 class StubExtractionLlm implements ReportLlm {
   readonly seenUsers: string[] = [];
   private readonly responses: string[];
 
-  constructor(responses: string[]) {
+  constructor(responses: string[], private readonly finishReason?: string) {
     this.responses = [...responses];
   }
 
@@ -148,7 +150,7 @@ class StubExtractionLlm implements ReportLlm {
     this.seenUsers.push(user);
     const content = this.responses.shift();
     if (content === undefined) throw new Error("StubExtractionLlm: response queue exhausted");
-    return { content, totalTokens: 12, model: "stub-model" };
+    return { content, totalTokens: 12, model: "stub-model", finishReason: this.finishReason };
   }
 }
 
@@ -212,17 +214,24 @@ async function writeFiles(vaultDir: string, files: Record<string, string>): Prom
 
 async function makeHarness(
   files: Record<string, string>,
-  opts: { extractionResponses?: string[]; reports?: boolean } = {},
+  opts: {
+    extractionResponses?: string[];
+    reports?: boolean;
+    onProgress?: BuildProgressCallback;
+    truncates?: boolean;
+  } = {},
 ): Promise<Harness> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-extraction-"));
   const vaultDir = path.join(tmpDir, "vault");
   await writeFiles(vaultDir, files);
   const settings = makeSettings(vaultDir, path.join(tmpDir, "index.db"));
   const fakeEmbedder = new FakeEmbedder(64);
-  const extractionLlm = opts.extractionResponses ? new StubExtractionLlm(opts.extractionResponses) : undefined;
+  const extractionLlm = opts.extractionResponses
+    ? new StubExtractionLlm(opts.extractionResponses, opts.truncates ? "length" : undefined)
+    : undefined;
   const reportLlm = opts.reports ? new TemplateReportLlm() : undefined;
   const indexer = new Indexer(settings, fakeEmbedder, reportLlm, extractionLlm);
-  await indexer.build();
+  await indexer.build(opts.onProgress);
   return { indexer, settings, vaultDir, fakeEmbedder, extractionLlm, reportLlm };
 }
 
@@ -304,6 +313,56 @@ describe("Phase-5 DB reads (round trips)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Build-side LLM extraction", () => {
+  it("announces each call before it starts, so a slow response is never a silent gap", async () => {
+    const events: Array<{ message: string; kind?: "status" | "progress" }> = [];
+    await makeHarness(FIXTURE_FILES, {
+      extractionResponses: [EXTRACTION_RESPONSE],
+      reports: true,
+      onProgress: (message, kind) => events.push({ message, kind }),
+    });
+
+    const transient = events.filter((e) => e.kind === "progress").map((e) => e.message);
+    // The model label comes from settings.agent.model ("test" in the fixture),
+    // and the pre-call line carries the batch size so a huge batch is visible.
+    expect(transient.some((m) => /^Enrichment: entity extraction 1\/\d+ — calling test \(\d+ sections, ~\d+ tokens\)…$/.test(m))).toBe(true);
+    expect(transient.some((m) => /^Enrichment: community reports \d+\/\d+ — calling test \(.+, \d+ sections\)…$/.test(m))).toBe(true);
+    // Each announcement is still followed by that call's completion line.
+    expect(transient.some((m) => /^Enrichment: entity extraction 1\/\d+\.$/.test(m))).toBe(true);
+  });
+
+  it("drops the incomplete final line when the output cap truncates the response", async () => {
+    const events: Array<{ message: string; kind?: "status" | "progress" }> = [];
+    const truncated = [
+      "ENTITY|Bloom Energy|organization",
+      "ENTITY|Fuel Cell Stack|technology",
+      "ENTITY|Cold Bre",
+    ].join("\n");
+    const { settings } = await makeHarness(FIXTURE_FILES, {
+      extractionResponses: [truncated],
+      truncates: true,
+      onProgress: (message, kind) => events.push({ message, kind }),
+    });
+
+    const db = new DatabaseManager(settings.dbPath);
+    try {
+      const names = (await db.getAllEntities()).map((e) => e.name);
+      // The complete lines landed...
+      expect(names).toContain("Bloom Energy");
+      expect(names).toContain("Fuel Cell Stack");
+      // ...and the cut tail did not. "Cold Bre" is a substring of the fixture's
+      // "Cold Brew", so without the guard it WOULD have been stored.
+      expect(names).not.toContain("Cold Bre");
+    } finally {
+      await db.close();
+    }
+
+    // Reported as a permanent line (kind "status"), not on the transient
+    // progress element the next batch rewrites.
+    const truncation = events.filter((e) => /hit the output cap/.test(e.message));
+    expect(truncation).toHaveLength(1);
+    expect(truncation[0].kind).toBeUndefined();
+  });
+
   it("writes llm:-typed entities, mention rows, and semantic edges", async () => {
     const { settings, extractionLlm } = await makeHarness(FIXTURE_FILES, {
       extractionResponses: [EXTRACTION_RESPONSE],

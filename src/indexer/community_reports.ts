@@ -17,11 +17,14 @@
 // tests assert the INPUTS (which sections reached the prompt, the context
 // cap, the ranked reports) with a fake LLM — never the real network.
 
-import { settings, resolveApiKey, thinkingEnabledFor } from "../config";
+import { settings, resolveApiKey, reasoningConfig, type ReasoningSettings } from "../config";
 import { errorMessage } from "../errors";
 import { getLlmClient, detectProvider } from "../agent/llm_client";
 import type { ILlmClient } from "../agent/llm_client";
 import { cosineSimilarity } from "./embedding";
+import { dropIncompleteFinalLine, isOutputTruncated } from "./completion_output";
+import { startHeartbeat } from "../progress";
+import { debugLog } from "../debug";
 import { significantTokens } from "./graph_search";
 import type { IEmbedder } from "./embedder";
 import type {
@@ -138,44 +141,64 @@ export interface ReportLlmResult {
   content: string;
   totalTokens: number;
   model: string;
+  /** Provider finish reason. "length" means the output cap cut the response,
+   * so its final line may be incomplete. */
+  finishReason?: string;
+}
+
+/** Per-call options for one build-side completion. */
+export interface ReportLlmCallOptions {
+  /** Output cap in tokens (config.yaml `max_output_tokens`). Omitted = the
+   * provider's own ceiling applies. */
+  maxTokens?: number;
 }
 
 /** The LLM surface both drivers need — faked in tests (StubLlmClient style). */
 export interface ReportLlm {
-  complete(system: string, user: string): Promise<ReportLlmResult>;
+  complete(system: string, user: string, opts?: ReportLlmCallOptions): Promise<ReportLlmResult>;
 }
 
 /**
  * Default ReportLlm — one provider chat completion (the generateManifest
  * pattern: a single chat call, no tools). The optional llm param is a test
- * seam only; enableThinking honors the build feature gate like
- * generateManifest does.
+ * seam only; reasoning comes from the ONE global setting, like every other
+ * client (null = send no reasoning params).
  */
 export class ChatReportLlm implements ReportLlm {
   private readonly client: ILlmClient;
   private readonly model: string;
 
-  constructor(options: { model?: string; llm?: ILlmClient; enableThinking?: boolean } = {}) {
+  constructor(options: { model?: string; llm?: ILlmClient; reasoning?: ReasoningSettings | null } = {}) {
     this.model = options.model || settings.agent.model;
-    const enableThinking = options.enableThinking ?? thinkingEnabledFor("build");
+    const reasoning = options.reasoning === undefined ? reasoningConfig() : options.reasoning;
     this.client = options.llm || getLlmClient(
       detectProvider(settings.api.baseUrl || ""),
       this.model,
       resolveApiKey(),
       settings.api.baseUrl,
-      enableThinking,
+      reasoning,
     );
   }
 
-  async complete(system: string, user: string): Promise<ReportLlmResult> {
-    const response = await this.client.chatCompletion(this.model, [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ]);
+  async complete(
+    system: string,
+    user: string,
+    opts?: ReportLlmCallOptions,
+  ): Promise<ReportLlmResult> {
+    const response = await this.client.chatCompletion(
+      this.model,
+      [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      null,
+      { maxTokens: opts?.maxTokens },
+    );
     return {
       content: response.content || "",
       totalTokens: response.usage?.totalTokens ?? 0,
       model: this.model,
+      finishReason: response.finishReason,
     };
   }
 }
@@ -212,7 +235,25 @@ export interface CommunityReportResult {
 export async function generateCommunityReports(
   db: CommunityReportStore,
   llm: ReportLlm,
-  opts: { contextCapTokens?: number } = {},
+  opts: {
+    contextCapTokens?: number;
+    /** Output cap in tokens for each report call (config.yaml
+     * reports.max_output_tokens). Omitted = the provider's own ceiling. */
+    maxOutputTokens?: number;
+    /** Called when a report response hit the output cap. */
+    onCommunityTruncated?: (index: number, total: number) => void;
+    /** Called before each community's LLM call — see generateCommunityReportsFor. */
+    onCommunityStart?: (
+      index: number,
+      total: number,
+      label: string,
+      sections: number,
+    ) => void;
+    /** Called every few seconds while a community call is in flight. */
+    onCommunityWait?: (index: number, total: number, elapsed: number) => void;
+    /** Called after each community with (completed, total). */
+    onCommunityProgress?: (completed: number, total: number) => void;
+  } = {},
 ): Promise<CommunityReportResult[]> {
   const communities = await db.getAllCommunities();
   return generateCommunityReportsFor(
@@ -233,38 +274,89 @@ export async function generateCommunityReportsFor(
   db: CommunityReportStore,
   llm: ReportLlm,
   communityIds: string[],
-  opts: { contextCapTokens?: number } = {},
+  opts: {
+    contextCapTokens?: number;
+    /** Output cap in tokens for each report call (config.yaml
+     * reports.max_output_tokens). Omitted = the provider's own ceiling. */
+    maxOutputTokens?: number;
+    /** Called when a report response hit the output cap, so the caller can say
+     * so on the progress channel instead of silently storing a cut report. */
+    onCommunityTruncated?: (index: number, total: number) => void;
+    /** Called before each community's LLM call with the resolved label, so the
+     * first progress line lands before the first slow response. */
+    onCommunityStart?: (
+      index: number,
+      total: number,
+      label: string,
+      sections: number,
+    ) => void;
+    /** Called every few seconds while a community call is in flight: a ticking
+     * line is what separates "slow" from "hung". */
+    onCommunityWait?: (index: number, total: number, elapsed: number) => void;
+    /** Called after each community with (completed, total) — includes the
+     * communities skipped for having no member content, so the count is
+     * monotonic and the last call always reports total/total. */
+    onCommunityProgress?: (completed: number, total: number) => void;
+  } = {},
 ): Promise<CommunityReportResult[]> {
   const capTokens = opts.contextCapTokens ?? DEFAULT_REPORT_CONTEXT_CAP_TOKENS;
   const communities = await db.getAllCommunities();
   const labelById = new Map(communities.map((c) => [c.community_id, c.label || c.community_id]));
+  const orderedIds = [...communityIds].sort();
   const results: CommunityReportResult[] = [];
 
-  for (const communityId of [...communityIds].sort()) {
+  for (let i = 0; i < orderedIds.length; i++) {
+    const communityId = orderedIds[i];
     const sections = await db.getSectionsForCommunity(communityId);
     const built = buildReportContext(sections, capTokens);
-    if (built.includedSectionKeys.length === 0) continue;
+    let truncated = false;
+    if (built.includedSectionKeys.length > 0) {
+      const label = labelById.get(communityId) ?? communityId;
+      const position = i + 1;
+      debugLog(
+        "reports",
+        `community ${position}/${orderedIds.length} (${label}): ` +
+          `${built.includedSectionKeys.length} sections, ~${built.totalTokens} tokens`,
+      );
+      opts.onCommunityStart?.(position, orderedIds.length, label, built.includedSectionKeys.length);
 
-    const label = labelById.get(communityId) ?? communityId;
-    const completion = await llm.complete(
-      REPORT_SYSTEM_PROMPT,
-      `Community: ${label}\n\nSections:\n${built.context}`,
-    );
-    await db.upsertCommunityReport({
-      communityId,
-      report: completion.content,
-      model: completion.model,
-      tokens: completion.totalTokens,
-    });
-    results.push({
-      communityId,
-      report: completion.content,
-      model: completion.model,
-      tokens: completion.totalTokens,
-      includedSectionKeys: built.includedSectionKeys,
-    });
+      const callStartedAt = Date.now();
+      const stopHeartbeat = startHeartbeat((elapsed) =>
+        opts.onCommunityWait?.(position, orderedIds.length, elapsed));
+      const completion = await llm
+        .complete(REPORT_SYSTEM_PROMPT, `Community: ${label}\n\nSections:\n${built.context}`, {
+          maxTokens: opts.maxOutputTokens,
+        })
+        .finally(stopHeartbeat);
+      truncated = isOutputTruncated(completion.finishReason);
+      debugLog(
+        "reports",
+        `community ${position}/${orderedIds.length}: model=${completion.model} ` +
+          `returned in ${Date.now() - callStartedAt}ms, ${completion.content.length} content chars` +
+          (truncated ? " TRUNCATED at the output cap" : ""),
+      );
+
+      // The cap cuts mid-sentence, so store only the complete lines.
+      const report = truncated ? dropIncompleteFinalLine(completion.content) : completion.content;
+      await db.upsertCommunityReport({
+        communityId,
+        report,
+        model: completion.model,
+        tokens: completion.totalTokens,
+      });
+      results.push({
+        communityId,
+        report,
+        model: completion.model,
+        tokens: completion.totalTokens,
+        includedSectionKeys: built.includedSectionKeys,
+      });
+    }
+    opts.onCommunityProgress?.(i + 1, orderedIds.length);
+    // Reported last: the indexer emits this as a permanent line, so it must not
+    // be the message a later per-community line replaces.
+    if (truncated) opts.onCommunityTruncated?.(i + 1, orderedIds.length);
   }
-
   return results;
 }
 

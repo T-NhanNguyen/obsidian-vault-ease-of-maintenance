@@ -25,8 +25,9 @@ import {
   runComprehensionBuildStage,
   runBuildIndex,
 } from "./agent/runtime";
-import type { ChatQueryResponse } from "./types";
+import type { ChatQueryResponse, BuildProgressCallback } from "./types";
 import type { ClarifyAnswerProvider } from "./agent/tools";
+import { elapsedSeconds, formatSeconds } from "./progress";
 
 export type { ChatIntent } from "./types";
 
@@ -47,6 +48,17 @@ function busyAnswer(): ChatQueryResponse {
   return { answer: chatBusyMessage(), results: [], citationMap: {} };
 }
 
+/** Stage rollup — phase 1's own timer excludes the comprehension prefix, so
+ * the total tells the user what the whole cold build cost. */
+function buildStageDoneMessage(comprehensionSeconds: number, indexSeconds: number): string {
+  const totalSeconds = comprehensionSeconds + indexSeconds;
+  return (
+    `Build stage done in ${formatSeconds(totalSeconds)} ` +
+    `(comprehension+manifest ${formatSeconds(comprehensionSeconds)}, ` +
+    `index ${formatSeconds(indexSeconds)}).`
+  );
+}
+
 /** Runs one chat-surface query under the chat lock.
  *
  * - runBuildStage (the cold build's first question): comprehension stage →
@@ -60,16 +72,21 @@ export async function runChatRouter(
   question: string,
   ask?: ClarifyAnswerProvider,
   runBuildStage = false,
+  onProgress?: BuildProgressCallback,
 ): Promise<ChatQueryResponse> {
   const owner: ChatLockOwner = runBuildStage ? "build" : "chat";
   if (!acquireChatLock(owner)) return busyAnswer();
   try {
     if (runBuildStage) {
-      const comprehension = await runComprehensionBuildStage(settings.vaultPath, question, ask);
-      const build = await runBuildIndex(settings.vaultPath);
+      const stageStartedAt = Date.now();
+      const comprehension = await runComprehensionBuildStage(settings.vaultPath, question, ask, onProgress);
+      const comprehensionSeconds = elapsedSeconds(stageStartedAt);
+      const indexStartedAt = Date.now();
+      const build = await runBuildIndex(settings.vaultPath, onProgress);
+      onProgress?.(buildStageDoneMessage(comprehensionSeconds, elapsedSeconds(indexStartedAt)));
       return { ...comprehension, answer: `${comprehension.answer}\n\n${build}` };
     }
-    if (isComprehensionRequest(question)) return await runComprehension(question, ask);
+    if (isComprehensionRequest(question)) return await runComprehension(question, ask, undefined, onProgress);
     return await runChatQuery(question, ask);
   } finally {
     releaseChatLock();

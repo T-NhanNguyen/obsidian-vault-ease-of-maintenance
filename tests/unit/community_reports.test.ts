@@ -599,6 +599,26 @@ describe("globalQuery", () => {
 // ---------------------------------------------------------------------------
 
 describe("ChatReportLlm", () => {
+  it("passes the output cap through to the provider", async () => {
+    let seenOpts: unknown = null;
+    const fakeClient: ILlmClient = {
+      async chatCompletion(_model, _messages, _tools, opts) {
+        seenOpts = opts;
+        return {
+          completionId: "c",
+          role: "assistant",
+          content: "the report",
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        };
+      },
+    };
+
+    const llm = new ChatReportLlm({ model: "test-model", llm: fakeClient });
+    await llm.complete("system", "user", { maxTokens: 1000 });
+
+    expect(seenOpts).toEqual({ maxTokens: 1000 });
+  });
+
   it("drives the injected ILlmClient and surfaces content, tokens, and model", async () => {
     let seen: Array<{ model: string; messages: unknown[] }> = [];
     const fakeClient: ILlmClient = {
@@ -617,7 +637,13 @@ describe("ChatReportLlm", () => {
     const llm = new ChatReportLlm({ model: "test-model", llm: fakeClient });
     const result = await llm.complete("system", "user");
 
-    expect(result).toEqual({ content: "the report", totalTokens: 15, model: "test-model" });
+    expect(result).toEqual({
+      content: "the report",
+      totalTokens: 15,
+      model: "test-model",
+      // Surfaced so the build legs can detect an output-cap truncation.
+      finishReason: "stop",
+    });
     expect(seen).toHaveLength(1);
     expect(seen[0].model).toBe("test-model");
     expect(seen[0].messages).toEqual([

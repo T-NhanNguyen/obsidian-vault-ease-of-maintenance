@@ -30,3 +30,5 @@ build-plugin.sh
 
 # Private development journal (Obsidian vault) — never commit
 .dev-vault/
+# Private planning / action items — never commit (debug + phase plans live here)
+action-items/

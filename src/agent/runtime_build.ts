@@ -25,7 +25,7 @@ import {
 import type { AskQuestion } from "./clarify";
 import type { ClarifyAnswerProvider } from "./tools";
 import * as toolImpl from "./tools";
-import type { ChatQueryResponse } from "../types";
+import type { ChatQueryResponse, BuildProgressCallback } from "../types";
 
 /** Stages 1 + 2 decision: ensure the manifest skeleton exists (never
  * overwriting an existing one) and decide whether the comprehension can be
@@ -45,9 +45,9 @@ export async function prepareBuild(vaultPath: string): Promise<{ plan: BuildComp
 // Test seam only (the same pattern as the chat/comprehension factories): a
 // stub replaces the sql.js index build so router tests verify the stage
 // wiring without a real database or wasm.
-let buildIndexSeam: (() => Promise<string>) | null = null;
+let buildIndexSeam: ((onProgress?: BuildProgressCallback) => Promise<string>) | null = null;
 
-export function setBuildIndexSeam(factory: (() => Promise<string>) | null): void {
+export function setBuildIndexSeam(factory: ((onProgress?: BuildProgressCallback) => Promise<string>) | null): void {
   buildIndexSeam = factory;
 }
 
@@ -59,12 +59,12 @@ export function resetBuildIndexSeam(): void {
  * disk on every build (ManifestParser.getCommunitySeeds), so a populated
  * manifest maps the communities from real purposes; with markers left, the
  * folder-name fallback seeds them. */
-export async function runBuildIndex(vaultPath: string): Promise<string> {
-  if (buildIndexSeam) return buildIndexSeam();
+export async function runBuildIndex(vaultPath: string, onProgress?: BuildProgressCallback): Promise<string> {
+  if (buildIndexSeam) return buildIndexSeam(onProgress);
   const t0 = Date.now();
   const llmSeam = new ChatReportLlm();
   const indexer = new Indexer(settings, undefined, llmSeam, llmSeam);
-  await indexer.build();
+  await indexer.build(onProgress);
   const files = indexer.scanner.scan().length;
   const elapsed = (Date.now() - t0) / 1000;
   return `Index built: ${files} files indexed in ${elapsed.toFixed(0)}s at ${settings.dbPath}`;
@@ -79,8 +79,9 @@ export async function runComprehensionBuildStage(
   vaultPath: string,
   question: string,
   ask?: ClarifyAnswerProvider,
+  onProgress?: BuildProgressCallback,
 ): Promise<ChatQueryResponse> {
-  const response = await runComprehension(question, ask);
+  const response = await runComprehension(question, ask, undefined, onProgress);
   const askFolder: AskQuestion = async (q) =>
     ask ? await ask({ question: q.prompt, context: q.context, options: q.options }) : null;
   await populateManifestFromCard(vaultPath, askFolder);

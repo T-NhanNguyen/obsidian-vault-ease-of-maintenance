@@ -16,8 +16,8 @@ import * as path from "path";
 import {
   settings,
   resolveApiKey,
-  defaultSettings,
-  type ComprehensionSettings,
+  reasoningConfig,
+  defaultSettings, type ComprehensionSettings,
 } from "../config";
 import { errorMessage } from "../errors";
 import { parseIgnorePatterns } from "../agent/engine";
@@ -61,7 +61,9 @@ import {
 } from "./state";
 import { buildSummaryCard, SummaryCardStore, isReusableCard, buildReuseAnswer, type RunComprehensionOptions } from "./summary";
 import { SKIM_CACHE_FILENAME } from "./paths";
-import type { ChatQueryResponse, ChatQueryResult } from "../types";
+import { formatSkimReport } from "./skim_format";
+import { comprehensionToolMessage, comprehensionTurnMessage } from "./progress";
+import type { ChatQueryResponse, ChatQueryResult, BuildProgressCallback } from "../types";
 import { readPromptSection, fillTemplate } from "../definitions";
 import protocolDefinitionMd from "../../maintainer-definitions/comprehension-vault-protocol.md";
 import runMessagesDefinitionMd from "../../maintainer-definitions/comprehension-run-messages.md";
@@ -179,46 +181,6 @@ function computeCoverage(report: SkimReport): number {
 }
 
 // ---------------------------------------------------------------------------
-// Dense model-facing skim format (R2.2) — the tool result is a terse line
-// report, NOT JSON.stringify(report). JSON stays the on-disk cache + internal
-// shape; the model sees one line per note, one line per folder, one header.
-// ---------------------------------------------------------------------------
-
-/** Collapse whitespace/newlines and strip pipe chars so one note stays one
- * line and the `|` delimiter survives. */
-function flattenLine(text: string): string {
-  return text.replace(/\s+/g, " ").replace(/\|/g, "/").trim();
-}
-
-function formatTags(tags: string[]): string {
-  return tags.length > 0 ? `[${tags.join(", ")}]` : "-";
-}
-
-function noteLine(note: SkimReport["notes"][number]): string {
-  const tags = extractTags(note.frontmatter).map((t) => t.toLowerCase());
-  const excerpt = flattenLine(note.excerpt) || "(no body)";
-  return `## ${note.path} | ${note.kind} | ${note.wordCount}w | ${formatTags(tags)} | ${excerpt}`;
-}
-
-function folderLine(dir: SkimReport["directories"][number]): string {
-  const tags = dir.dominantTags.map((d) => d.tag);
-  const name = dir.path === "" ? "(root)" : dir.path;
-  return `## folder: ${name} | ${dir.fileCount} files | ~${dir.avgWords}w avg | tags ${formatTags(tags)}`;
-}
-
-function formatSkimReport(report: SkimReport, vaultName: string): string {
-  const totalFiles = report.directories.reduce((acc, d) => acc + d.fileCount, 0);
-  const header =
-    `# ${vaultName} — ${totalFiles} files, ${report.directories.length} folders, ` +
-    `~${report.totalWords} words total`;
-  return [
-    header,
-    ...report.notes.map(noteLine),
-    ...report.directories.map(folderLine),
-  ].join("\n");
-}
-
-// ---------------------------------------------------------------------------
 // Run context
 // ---------------------------------------------------------------------------
 
@@ -243,6 +205,9 @@ interface ComprehensionContext {
    * stop under confirmed status) — otherwise the runtime asks for one. */
   concludedByModel: boolean;
   ask: ClarifyAnswerProvider | undefined;
+  /** Chat-surface progress channel — the comprehension pass runs before the
+   * index build, so without it the chat shows only "Thinking…" for minutes. */
+  onProgress?: BuildProgressCallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +709,12 @@ async function runLoop(
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     if (ctx.stateStore.get().toolCallsUsed >= ctx.stateStore.get().toolCallBudget) break;
 
+    const turnState = ctx.stateStore.get();
+    ctx.onProgress?.(
+      comprehensionTurnMessage(turn + 1, MAX_TURNS, turnState.toolCallsUsed, turnState.toolCallBudget),
+      "progress",
+    );
+
     upsertStateCard(messages, buildStateCard(ctx));
     compactConversation(messages, COMPREHENSION_CONTEXT_BUDGET_TOKENS);
 
@@ -778,6 +749,15 @@ async function runLoop(
         }
         messages.push({ role: "tool", tool_call_id: tc.id, content: result });
         ctx.stateStore.useToolCalls(1);
+        const callState = ctx.stateStore.get();
+        ctx.onProgress?.(
+          comprehensionToolMessage(
+            matched.length > 0 ? matched[0].name : `unknown:${tc.function.name}`,
+            callState.toolCallsUsed,
+            callState.toolCallBudget,
+          ),
+          "progress",
+        );
       }
 
       const state = ctx.stateStore.get();
@@ -867,6 +847,7 @@ export async function runComprehension(
   question: string,
   ask?: ClarifyAnswerProvider,
   options?: RunComprehensionOptions,
+  onProgress?: BuildProgressCallback,
 ): Promise<ChatQueryResponse> {
   if (!settings.vaultPath) {
     return {
@@ -909,6 +890,7 @@ export async function runComprehension(
     clarifyPending: false,
     concludedByModel: false,
     ask,
+    onProgress,
   };
 
   let db: DatabaseManager | null = null as DatabaseManager | null;
@@ -926,7 +908,7 @@ export async function runComprehension(
           settings.agent.model,
           resolveApiKey(),
           settings.api.baseUrl,
-          false,
+          reasoningConfig(),
         );
     const modelName = settings.agent.model;
     const messages: ChatMessage[] = [

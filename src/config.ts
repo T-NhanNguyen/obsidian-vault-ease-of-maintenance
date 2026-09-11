@@ -62,6 +62,9 @@ export interface ReportsSettings {
    * generated from (community_reports.ts). Higher = richer reports, more
    * LLM tokens per build. */
   contextCapTokens: number;
+  /** Output cap (tokens) per report call. Bounds one call so a rambling model
+   * cannot run for minutes. Omitted = DEFAULT_REPORT_MAX_OUTPUT_TOKENS. */
+  maxOutputTokens?: number;
 }
 
 // LLM entity-extraction tuning — config.yaml `extraction:` section. Drives
@@ -73,6 +76,9 @@ export interface ExtractionSettings {
    * greedy packing of files under this budget). Higher = more sections per
    * LLM call, fewer calls, richer extraction. */
   contextCapTokens: number;
+  /** Output cap (tokens) per extraction call. Bounds one call so a rambling
+   * model cannot run for minutes. Omitted = DEFAULT_EXTRACTION_MAX_OUTPUT_TOKENS. */
+  maxOutputTokens?: number;
 }
 
 // Vault-comprehension tuning — config.yaml `comprehension:` section. Drives
@@ -115,22 +121,47 @@ export interface ComprehensionSettings {
    * valid summary card (the run-once reuse rule, handoff Part A). Sticky:
    * flip it back to false to resume reuse. */
   forceRefresh?: boolean;
+  /** Conversation budget (estimated tokens) for the bounded-context window
+   * compaction (runtime_comprehension.ts). Omitted = DEFAULT_COMPREHENSION_
+   * CONTEXT_BUDGET_TOKENS. */
+  contextBudgetTokens?: number;
 }
 
 export interface AgentSettings {
   model: string;
-  // Per-feature reasoning gate (config.yaml `agent.thinking.*`). Reasoning
-  // models (gemma-4-31b-it) emit a long thinking phase before any visible
-  // answer — measured to give no quality gain for sort/build, so everything
-  // defaults OFF and is toggled per feature where quality justifies latency
-  // (see .dev-vault/roadmap/thinking-enable-sort-build.md).
-  thinking: ThinkingSettings;
+  /** @deprecated Superseded by the global `reasoning` setting. Parsed no more,
+   * rendered no more, and read by nothing — kept optional only so older
+   * config.yaml files and test fixtures keep type-checking. */
+  thinking?: ThinkingSettings;
 }
 
+/** Shape of the retired per-feature gate — see AgentSettings.thinking. */
 export interface ThinkingSettings {
   chat: boolean;
   build: boolean;
   sort: boolean;
+}
+
+/** Thinking-effort levels, in ascending cost. Providers that expose an effort
+ * knob map these directly; providers without one (or models without thinking)
+ * accept the setting and simply ignore it. */
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
+/** Every effort level, in ascending cost — one source of truth for the
+ * Settings-tab dropdown options and for validating a stored value. */
+export const REASONING_EFFORTS: ReasoningEffort[] = ["minimal", "low", "medium", "high"];
+
+/** The ONE reasoning control, shared by local and hosted providers.
+ *
+ * `enabled: false` actively switches thinking OFF on every provider (local:
+ * chat_template_kwargs.enable_thinking; OpenRouter: reasoning.enabled;
+ * OpenAI-compatible: no param — the reasoning_effort field is only sent when
+ * ON). Leaving it out entirely is deliberately not an option: a reasoning
+ * model that thinks by default used to spend ~94% of its output tokens on
+ * chain-of-thought that the extraction parser then discarded. */
+export interface ReasoningSettings {
+  enabled: boolean;
+  effort: ReasoningEffort;
 }
 
 export interface PreviewSettings {
@@ -157,6 +188,9 @@ export interface Settings {
   manifest: ManifestSettings;
   query: QuerySettings;
   agent: AgentSettings;
+  /** Optional: partial Settings (tests, fresh installs) degrade to the
+   * reasoningConfig() default. */
+  reasoning?: ReasoningSettings;
   preview: PreviewSettings;
   index: IndexSettings;
   graph: GraphSettings;
@@ -193,11 +227,10 @@ export function defaultSettings(): Settings {
     },
     agent: {
       model: "",
-      thinking: {
-        chat: false,
-        build: false,
-        sort: false,
-      },
+    },
+    reasoning: {
+      enabled: false,
+      effort: "medium",
     },
     preview: {
       enabled: true,
@@ -213,9 +246,11 @@ export function defaultSettings(): Settings {
     },
     reports: {
       contextCapTokens: 3000,
+      maxOutputTokens: 1000,
     },
     extraction: {
       contextCapTokens: 3000,
+      maxOutputTokens: 1000,
     },
     comprehension: {
       tokenBudget: 4000,
@@ -233,6 +268,7 @@ export function defaultSettings(): Settings {
       hotTopics: [],
       deepenMaxFolders: 3,
       forceRefresh: false,
+      contextBudgetTokens: 6000,
     },
   };
 }
@@ -304,9 +340,10 @@ export function resolveApiKey(): string | null {
 }
 
 /**
- * Per-feature reasoning gate (config.yaml `agent.thinking.*`). Undefined
- * (absent config, partial Settings) degrades to OFF — the measured default.
+ * The reasoning setting, resolved for partial Settings (tests, fresh
+ * installs): an absent section degrades to OFF at medium effort — the
+ * measured default that keeps extraction output parseable.
  */
-export function thinkingEnabledFor(feature: keyof ThinkingSettings): boolean {
-  return settings.agent.thinking?.[feature] ?? false;
+export function reasoningConfig(): ReasoningSettings {
+  return settings.reasoning ?? { enabled: false, effort: "medium" };
 }

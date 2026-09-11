@@ -70,6 +70,7 @@ const METHOD_DISPATCH: Record<string, DbMethodFn> = {
   getFolderedFiles: (db) => db.getFolderedFiles(),
   getWikilinksForFolder: (db, args) => db.getWikilinksForFolder(args[0] as string),
   getFolderHeadings: (db, args) => db.getFolderHeadings(args[0] as string),
+  export: (db) => db.export(),
 };
 
 // ---------------------------------------------------------------------------

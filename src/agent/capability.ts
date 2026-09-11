@@ -103,7 +103,10 @@ export async function probeConnection(): Promise<ConnectionProbeResult> {
   try {
     const client = probeClientFactory
       ? probeClientFactory()
-      : new LLMClient(undefined, undefined, { enableThinking: false });
+      // reasoning: null — the probe sends NO reasoning params at all, so a
+      // disabled-thinking payload can never make a model look like it cannot
+      // emit tool calls.
+      : new LLMClient(undefined, undefined, { reasoning: null });
     const [, history] = await client.chat(
       PROBE_SYSTEM_PROMPT,
       PROBE_USER_MESSAGE,

@@ -1,7 +1,7 @@
 // Integration tests — full pipeline with the fake embedder.
 // Ported from tests/integration/test_pipeline.py (better-sqlite3 era).
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -9,6 +9,8 @@ import initSqlJs from "sql.js";
 import { FakeEmbedder } from "../fixtures/fake_embedder";
 import { Settings, defaultSettings } from "../../src/config";
 import { Indexer } from "../../src/indexer/indexer";
+import { DatabaseManager } from "../../src/indexer/db";
+import type { ReportLlm, ReportLlmResult } from "../../src/indexer/community_reports";
 
 // Path to the sample vault fixture (original repo, sibling directory)
 const FIXTURE_VAULT_DIR = path.resolve(
@@ -370,5 +372,185 @@ describe("GraphConfigTuning", () => {
     expect(countEdgesByKind(sparse.settings.dbPath, "inferred")).toBeLessThanOrEqual(
       countEdgesByKind(dense.settings.dbPath, "inferred"),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase split — core index checkpoint, then non-fatal LLM enrichment
+// ---------------------------------------------------------------------------
+
+/** Extraction stub that records the on-disk core index on its first call:
+ * a populated FILES table there proves the phase-1 checkpoint ran before
+ * the reasoning model was touched. */
+class CheckpointProbeLlm implements ReportLlm {
+  readonly filesSeenOnFirstCall: number[] = [];
+
+  constructor(private readonly probe: () => number) {}
+
+  async complete(): Promise<ReportLlmResult> {
+    if (this.filesSeenOnFirstCall.length === 0) this.filesSeenOnFirstCall.push(this.probe());
+    return { content: "", totalTokens: 0, model: "stub-model" };
+  }
+}
+
+/** Enrichment stub that always fails — phase 2 must stay non-fatal. */
+class FailingEnrichmentLlm implements ReportLlm {
+  async complete(): Promise<ReportLlmResult> {
+    throw new Error("enrichment model down");
+  }
+}
+
+/** Report stub — echoes only the community label. */
+class LabelReportLlm implements ReportLlm {
+  async complete(_system: string, user: string): Promise<ReportLlmResult> {
+    const label = user.match(/Community: ([^\n]+)/)?.[1] || "unknown";
+    return { content: `Summary of ${label}.`, totalTokens: 1, model: "stub-model" };
+  }
+}
+
+describe("BuildPhaseSplit", () => {
+  const files = {
+    "notes/a.md": "# Bloom Energy\n\nBloom fuel cells. See [[b]].\n",
+    "notes/b.md": "# Datacenter Power\n\nAI data centers. Back to [[a]].\n",
+  };
+
+  it("checkpoints the core index before enrichment and reports each phase boundary", async () => {
+    const { indexer, settings } = await indexerFactory(files);
+    const events: Array<{ message: string; kind?: "status" | "progress" }> = [];
+    const extractionLlm = new CheckpointProbeLlm(() =>
+      fs.existsSync(settings.dbPath) ? count(settings.dbPath, "FILES") : -1,
+    );
+    const splitIndexer = new Indexer(settings, indexer.embedder, new LabelReportLlm(), extractionLlm);
+
+    await splitIndexer.build((message, kind) => events.push({ message, kind }));
+    const progress = events.map((event) => event.message);
+
+    // Phase 1 was checkpointed BEFORE extraction: the probe read a
+    // populated FILES table from the vault file on the first LLM call.
+    expect(extractionLlm.filesSeenOnFirstCall).toEqual([2]);
+    // The chat's live phase messages, in order.
+    expect(progress[0]).toMatch(/^Core index ready: 2 files in \d+s\. Retrieval works now\.$/);
+    expect(progress[1]).toBe("Enrichment started: entity extraction and community reports.");
+    expect(progress[progress.length - 1]).toMatch(/^Enrichment done: \d+ communities in \d+s\.$/);
+    // Phase-2 per-call progress: transient (kind "progress") lines that name
+    // the call in flight, so a stalled call is visible instead of silent.
+    const transient = events.filter((event) => event.kind === "progress").map((e) => e.message);
+    expect(transient.some((m) => /^Enrichment: entity extraction 1\/\d+\.$/.test(m))).toBe(true);
+    expect(transient.some((m) => /^Enrichment: community reports \d+\/\d+\.$/.test(m))).toBe(true);
+    // Enrichment landed on disk only after the checkpoint.
+    expect(count(settings.dbPath, "COMMUNITY_REPORTS")).toBeGreaterThan(0);
+  });
+
+  it("keeps the core index usable when enrichment fails", async () => {
+    const { indexer, settings } = await indexerFactory(files);
+    const progress: string[] = [];
+    const splitIndexer = new Indexer(
+      settings,
+      indexer.embedder,
+      new FailingEnrichmentLlm(),
+      new FailingEnrichmentLlm(),
+    );
+
+    await expect(splitIndexer.build((message) => progress.push(message))).resolves.toBeUndefined();
+
+    expect(progress[progress.length - 1]).toMatch(
+      /^Enrichment failed: enrichment model down.*\. The core index still works\.$/,
+    );
+    expect(count(settings.dbPath, "FILES")).toBe(2);
+    expect(count(settings.dbPath, "SECTIONS")).toBeGreaterThan(0);
+    expect(count(settings.dbPath, "COMMUNITY_SECTIONS")).toBe(count(settings.dbPath, "SECTIONS"));
+  });
+
+  it("checkpoint() persists live writes without closing the worker", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "test-checkpoint-"));
+    const dbPath = path.join(dir, "index.db");
+    const db = new DatabaseManager(dbPath);
+    try {
+      await db.initialize();
+      await db.insertCommunity({ communityId: "c1", seedSource: "manifest", label: "C1" });
+      await db.checkpoint();
+      expect(count(dbPath, "COMMUNITIES")).toBe(1);
+      // The worker stays open after the checkpoint: a later write still
+      // reaches disk through close().
+      await db.insertCommunity({ communityId: "c2", seedSource: "manifest", label: "C2" });
+    } finally {
+      await db.close();
+    }
+    expect(count(dbPath, "COMMUNITIES")).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Failure safety — a failed write leg must never replace a good index
+// ---------------------------------------------------------------------------
+
+describe("IndexFailureSafety", () => {
+  const files = {
+    "notes/a.md": "# Alpha\n\nbloom energy fuel cells overview.\n",
+    "notes/b.md": "# Beta\n\nbitcoin mining halving rewards.\n",
+  };
+
+  async function captureFailure(run: () => Promise<void>): Promise<Error> {
+    try {
+      await run();
+    } catch (e) {
+      return e instanceof Error ? e : new Error(String(e));
+    }
+    throw new Error("expected the call to fail");
+  }
+
+  it("phase-1 failure leaves the previous index untouched", async () => {
+    const { indexer, settings } = await indexerFactory(files);
+    await indexer.build();
+    const before = fs.readFileSync(settings.dbPath);
+
+    const failing = new Indexer(settings, indexer.embedder);
+    vi.spyOn(failing.graph, "computeAllEdges").mockRejectedValueOnce(
+      new Error("edge pass exploded"),
+    );
+
+    const error = await captureFailure(() => failing.build());
+    expect(error.message).toMatch(/Core index failed: edge pass exploded/);
+    expect(error.message).toMatch(/may be stale/);
+    // The cleared/partial in-memory index was discarded, not exported.
+    expect(fs.readFileSync(settings.dbPath).equals(before)).toBe(true);
+    expect(count(settings.dbPath, "FILES")).toBe(2);
+  });
+
+  it("incremental failure leaves the previous index untouched", async () => {
+    const { indexer, settings, vaultDir } = await indexerFactory(files);
+    await indexer.build();
+    const before = fs.readFileSync(settings.dbPath);
+
+    fs.writeFileSync(path.join(vaultDir, "notes/c.md"), "# Gamma\n\nsolar inverter efficiency.\n");
+    const failing = new Indexer(settings, indexer.embedder);
+    vi.spyOn(failing.graph, "computeEdgesForFiles").mockRejectedValueOnce(
+      new Error("edge recompute exploded"),
+    );
+
+    const error = await captureFailure(() => failing.incremental());
+    expect(error.message).toMatch(/Incremental update failed: edge recompute exploded/);
+    expect(fs.readFileSync(settings.dbPath).equals(before)).toBe(true);
+    // The new file was never committed.
+    expect(count(settings.dbPath, "FILES")).toBe(2);
+  });
+
+  it("journal replay failure leaves the previous index untouched", async () => {
+    const { indexer, settings, vaultDir } = await indexerFactory(files);
+    await indexer.build();
+    const before = fs.readFileSync(settings.dbPath);
+
+    fs.writeFileSync(path.join(vaultDir, "notes/c.md"), "# Gamma\n\nsolar inverter efficiency.\n");
+    const failing = new Indexer(settings, indexer.embedder);
+    vi.spyOn(failing.graph, "computeEdgesForFiles").mockRejectedValueOnce(
+      new Error("edge recompute exploded"),
+    );
+
+    const error = await captureFailure(() =>
+      failing.replayJournal([{ verdict: "new", file_path: "notes/c.md" }]),
+    );
+    expect(error.message).toMatch(/Journal replay failed: edge recompute exploded/);
+    expect(fs.readFileSync(settings.dbPath).equals(before)).toBe(true);
+    expect(count(settings.dbPath, "FILES")).toBe(2);
   });
 });

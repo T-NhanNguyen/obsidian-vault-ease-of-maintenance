@@ -26,6 +26,9 @@
 import { buildReportContext } from "./community_reports";
 import type { ReportLlm } from "./community_reports";
 import { entityId } from "./graph";
+import { startHeartbeat } from "../progress";
+import { debugLog } from "../debug";
+import { dropIncompleteFinalLine, isOutputTruncated } from "./completion_output";
 import type { Edge, EntityRow, EntityWriteInput, SectionEntityInput } from "./db_worker/types";
 import { readPromptSection } from "../definitions";
 import extractionDefinitionMd from "../../maintainer-definitions/entity-extraction.md";
@@ -429,21 +432,73 @@ export async function generateSemanticGraph(
   db: EntityExtractionStore,
   llm: ReportLlm,
   files: ExtractableFile[],
-  opts: { contextCapTokens?: number } = {},
+  opts: {
+    contextCapTokens?: number;
+    /** Output cap in tokens for each batch call (config.yaml
+     * extraction.max_output_tokens). Omitted = the provider's own ceiling. */
+    maxOutputTokens?: number;
+    /** Called when a batch response hit the output cap, so the caller can say
+     * so on the progress channel instead of silently storing less. */
+    onBatchTruncated?: (batch: number, total: number) => void;
+    /** Called before each batch's LLM call — the first progress line then
+     * lands immediately instead of only after the first slow response. */
+    onBatchStart?: (batch: number, total: number, sections: number, tokens: number) => void;
+    /** Called every few seconds while a batch call is in flight: a ticking
+     * line is what separates "slow" from "hung". */
+    onCallWait?: (batch: number, total: number, elapsed: number) => void;
+    /** Called after each batch with (completed, total) — the build's live
+     * progress line (a stalled call is otherwise invisible: one completion
+     * per batch, sequentially, with no output between). */
+    onBatchProgress?: (completed: number, total: number) => void;
+  } = {},
 ): Promise<ExtractionResult[]> {
   const capTokens = opts.contextCapTokens ?? DEFAULT_EXTRACTION_CONTEXT_CAP_TOKENS;
   const batches = buildExtractionBatches(files, capTokens);
   const results: ExtractionResult[] = [];
 
-  for (const batch of batches) {
-    const completion = await llm.complete(EXTRACTION_SYSTEM_PROMPT, batch.context);
-    const extraction = parseExtractionResponse(completion.content);
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    const batchNumber = i + 1;
+    debugLog(
+      "extraction",
+      `batch ${batchNumber}/${batches.length}: ${batch.fileIds.length} files, ` +
+        `${batch.sections.length} sections, ~${batch.totalTokens} tokens`,
+    );
+    opts.onBatchStart?.(batchNumber, batches.length, batch.sections.length, batch.totalTokens);
+
+    const callStartedAt = Date.now();
+    const stopHeartbeat = startHeartbeat((elapsed) =>
+      opts.onCallWait?.(batchNumber, batches.length, elapsed));
+    const completion = await llm
+      .complete(EXTRACTION_SYSTEM_PROMPT, batch.context, { maxTokens: opts.maxOutputTokens })
+      .finally(stopHeartbeat);
+    const truncated = isOutputTruncated(completion.finishReason);
+    debugLog(
+      "extraction",
+      `batch ${batchNumber}/${batches.length}: model=${completion.model} ` +
+        `returned in ${Date.now() - callStartedAt}ms` +
+        (truncated ? " TRUNCATED at the output cap" : ""),
+    );
+
+    // The cap cuts mid-line, so drop the partial final line — a half-written
+    // "ENTITY|Bloom Ener" would otherwise be stored as a real entity name.
+    const content = truncated ? dropIncompleteFinalLine(completion.content) : completion.content;
+    const extraction = parseExtractionResponse(content);
     await storeExtraction(db, batch.sections, extraction);
+    debugLog(
+      "extraction",
+      `batch ${batchNumber}/${batches.length}: ${extraction.entities.length} entities, ` +
+        `${extraction.relations.length} relations, ${completion.content.length} content chars`,
+    );
     results.push({
       fileIds: batch.fileIds,
       entities: extraction.entities.length,
       relations: extraction.relations.length,
     });
+    opts.onBatchProgress?.(batchNumber, batches.length);
+    // Reported last: the indexer emits this as a permanent line, so it must not
+    // be the message a later per-batch line replaces.
+    if (truncated) opts.onBatchTruncated?.(batchNumber, batches.length);
   }
 
   return results;

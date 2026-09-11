@@ -40,6 +40,15 @@ export interface SortReviewSpec {
  * the stage; follow-ups go to regular chat). */
 export type ChatIntent = "chat" | "build";
 
+/** Live progress channel for long chat-surface stages: the build's indexer
+ * emits a phase message at each boundary, the chat renderer appends it as a
+ * status bubble while the query is still running.
+ *
+ * kind "status" (default) appends a permanent line (phase boundaries).
+ * kind "progress" updates a single transient line in place, so per-call
+ * counts cannot flood the message list. */
+export type BuildProgressCallback = (message: string, kind?: "status" | "progress") => void;
+
 export interface ChatReviewSpec {
     readonly kind: "chat";
     /** The ask parameter is the chat UI's in-flight answer provider (the
@@ -48,6 +57,7 @@ export interface ChatReviewSpec {
     readonly query: (
         question: string,
         ask?: ClarifyAnswerProvider,
+        onProgress?: BuildProgressCallback,
     ) => Promise<ChatQueryResponse>;
     /** Optional question to auto-submit once the pane renders (a command
      * like "Understand vault" starts its run immediately). */

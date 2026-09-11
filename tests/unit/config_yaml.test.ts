@@ -29,15 +29,10 @@ embedding:
 agent:
   model: gemma-4-31b-it-4bit
 
-# Per-feature reasoning gate. Reasoning models (gemma-4-31b-it) emit a long
-# thinking phase (reasoning_content) before any visible answer — a big
-# latency cost. OFF by default (measured: no quality gain for sort/build);
-# toggle per feature where quality justifies it. See
-# .dev-vault/roadmap/thinking-enable-sort-build.md
-thinking:
-  chat: false
-  build: false
-  sort: false
+# The ONE reasoning control — local and hosted providers share it.
+reasoning:
+  enabled: false
+  effort: medium
 
 preview:
   enabled: true
@@ -64,9 +59,8 @@ describe("parseConfigYaml", () => {
     expect(cfg.embeddingModel).toBe("embeddinggemma-300m-8bit");
     expect(cfg.embeddingDimensions).toBe(768);
     expect(cfg.agentModel).toBe("gemma-4-31b-it-4bit");
-    expect(cfg.agentThinkingChat).toBe(false);
-    expect(cfg.agentThinkingBuild).toBe(false);
-    expect(cfg.agentThinkingSort).toBe(false);
+    expect(cfg.reasoningEnabled).toBe(false);
+    expect(cfg.reasoningEffort).toBe("medium");
     expect(cfg.manifestFilename).toBe("_manifest.md");
     expect(cfg.inboxFolder).toBe("");
     expect(cfg.ignorePatterns).toBe("");
@@ -146,24 +140,32 @@ reports:
     expect(tuned.reportsContextCapTokens).toBe(6000);
   });
 
-  it("maps the per-feature thinking section", () => {
+  it("maps the reasoning section", () => {
     const cfg = parseConfigYaml(
-      "agent:\n  model: gemma-4-31b-it-4bit\nthinking:\n  chat: true\n  build: false\n  sort: true\n"
+      "agent:\n  model: gemma-4-31b-it-4bit\nreasoning:\n  enabled: true\n  effort: high\n"
     );
     expect(cfg.agentModel).toBe("gemma-4-31b-it-4bit");
-    expect(cfg.agentThinkingChat).toBe(true);
-    expect(cfg.agentThinkingBuild).toBe(false);
-    expect(cfg.agentThinkingSort).toBe(true);
+    expect(cfg.reasoningEnabled).toBe(true);
+    expect(cfg.reasoningEffort).toBe("high");
+  });
+
+  it("maps the build-side output caps and the comprehension window budget", () => {
+    const cfg = parseConfigYaml(
+      "reports:\n  max_output_tokens: 900\nextraction:\n  max_output_tokens: 700\n" +
+        "comprehension:\n  context_budget_tokens: 5000\n"
+    );
+    expect(cfg.reportsMaxOutputTokens).toBe(900);
+    expect(cfg.extractionMaxOutputTokens).toBe(700);
+    expect(cfg.comprehensionContextBudgetTokens).toBe(5000);
   });
 
   it("parses booleans, integers, and quoted strings via the mapping", () => {
     const direct = parseConfigYaml(
-      "agent:\n  model: 'x'\nthinking:\n  chat: true\n  build: true\nembedding:\n  dimensions: 1024"
+      "agent:\n  model: 'x'\nreasoning:\n  enabled: true\nembedding:\n  dimensions: 1024"
     );
     expect(direct.agentModel).toBe("x");
-    expect(direct.agentThinkingChat).toBe(true);
-    expect(direct.agentThinkingBuild).toBe(true);
-    expect(direct.agentThinkingSort).toBe(undefined); // not set → default applies
+    expect(direct.reasoningEnabled).toBe(true);
+    expect(direct.reasoningEffort).toBe(undefined); // not set → default applies
     expect(direct.embeddingDimensions).toBe(1024);
   });
 
@@ -183,9 +185,10 @@ reports:
     expect(cfg.agentModel).toBe("m");
     expect(cfg).not.toHaveProperty("unknownTop");
     expect(cfg).not.toHaveProperty("mystery");
-    // The legacy flat enable_thinking key is dropped — the per-feature
-    // subsection replaces it (unknown keys are ignored, never guessed).
-    expect(parseConfigYaml("agent:\n  enable_thinking: true\n").agentThinkingChat).toBe(undefined);
+    // The legacy per-feature gate is dropped — the global reasoning section
+    // replaces it (unknown keys are ignored, never guessed).
+    expect(parseConfigYaml("agent:\n  enable_thinking: true\n").reasoningEnabled).toBe(undefined);
+    expect(parseConfigYaml("thinking:\n  chat: true\n").reasoningEnabled).toBe(undefined);
   });
 
   it("returns an empty mapping for empty or comment-only input", () => {
@@ -215,17 +218,17 @@ describe("mergeConfigLayers", () => {
   });
 });
 
-describe("thinkingEnabledFor", () => {
-  it("reads the per-feature gate from settings and defaults to OFF", async () => {
-    const { thinkingEnabledFor, updateSettings, defaultSettings } = await import("../../src/config");
+describe("reasoningConfig", () => {
+  it("reads the global reasoning setting and defaults to OFF at medium effort", async () => {
+    const { reasoningConfig, updateSettings, defaultSettings } = await import("../../src/config");
     updateSettings(defaultSettings());
-    expect(thinkingEnabledFor("chat")).toBe(false);
-    expect(thinkingEnabledFor("build")).toBe(false);
-    expect(thinkingEnabledFor("sort")).toBe(false);
+    expect(reasoningConfig()).toEqual({ enabled: false, effort: "medium" });
 
-    updateSettings({ agent: { model: "", thinking: { chat: true, build: false, sort: true } } });
-    expect(thinkingEnabledFor("chat")).toBe(true);
-    expect(thinkingEnabledFor("build")).toBe(false);
-    expect(thinkingEnabledFor("sort")).toBe(true);
+    updateSettings({ reasoning: { enabled: true, effort: "high" } });
+    expect(reasoningConfig()).toEqual({ enabled: true, effort: "high" });
+
+    // Partial Settings (tests, fresh installs) degrade to the default.
+    updateSettings({ reasoning: undefined });
+    expect(reasoningConfig()).toEqual({ enabled: false, effort: "medium" });
   });
 });

@@ -3,10 +3,53 @@
 
 import { postJsonViaRequestUrl } from "../http";
 import { errorMessage } from "../errors";
+import { debugLog } from "../debug";
+import type { ReasoningSettings } from "../config";
+
+/** Payload keys a provider may reject when it has no thinking support. The
+ * retry loop drops whichever are present and tries once more, so a model
+ * without reasoning cannot be blocked by the reasoning setting. */
+const LOCAL_REASONING_KEYS = ["chat_template_kwargs"];
+const OPENROUTER_REASONING_KEYS = ["reasoning"];
+const OPENAI_REASONING_KEYS = ["reasoning_effort"];
+
+/** Local (OMLX / llama.cpp-style) servers take thinking switches through the
+ * chat template: `enable_thinking` is the portable on/off, and the effort is
+ * handed to the template as well (an unused kwarg is inert, and a server that
+ * rejects it is covered by the fail-open retry). */
+function localReasoningPayload(reasoning: ReasoningSettings): Record<string, unknown> {
+  return reasoning.enabled
+    ? { enable_thinking: true, reasoning_effort: reasoning.effort }
+    : { enable_thinking: false };
+}
+
+/** OpenRouter exposes reasoning natively: `enabled` switches it off, `effort`
+ * picks the level. */
+function openRouterReasoningPayload(reasoning: ReasoningSettings): Record<string, unknown> {
+  return reasoning.enabled
+    ? { enabled: true, effort: reasoning.effort }
+    : { enabled: false };
+}
+
+/** Build-side output cap. Without it the provider applies its own ceiling (up
+ * to 65536 tokens on some hosted models), so one stalled call can generate for
+ * many minutes. Omitted = no cap is sent. */
+function applyMaxOutputTokens(
+  payload: Record<string, unknown>,
+  opts?: ChatCompletionOptions,
+): void {
+  if (opts?.maxTokens) payload.max_tokens = opts.maxTokens;
+}
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/** Per-call transport options. `maxTokens` caps the completion; a provider
+ * that hits the cap answers with finishReason "length". */
+export interface ChatCompletionOptions {
+  maxTokens?: number;
+}
 
 export interface ChatResponse {
   completionId: string;
@@ -95,6 +138,7 @@ export interface ILlmClient {
     model: string,
     messages: ChatMessage[],
     tools?: ChatTool[] | null,
+    opts?: ChatCompletionOptions,
   ): Promise<ChatResponse>;
 }
 
@@ -115,19 +159,25 @@ export class LocalLlmClient implements ILlmClient {
   private baseUrl: string;
   private model: string;
   private apiKey?: string;
-  private enableThinking: boolean;
+  private reasoning: ReasoningSettings | null;
 
-  constructor(baseUrl: string, model: string, apiKey?: string, enableThinking: boolean = false) {
+  constructor(
+    baseUrl: string,
+    model: string,
+    apiKey?: string,
+    reasoning: ReasoningSettings | null = null,
+  ) {
     this.baseUrl = baseUrl.replace(/\/v1\/?$/, "").replace(/\/$/, "");
     this.model = model;
     this.apiKey = apiKey;
-    this.enableThinking = enableThinking;
+    this.reasoning = reasoning;
   }
 
   async chatCompletion(
     model: string,
     messages: ChatMessage[],
     tools?: ChatTool[] | null,
+    opts?: ChatCompletionOptions,
   ): Promise<ChatResponse> {
     const endpoint = `${this.baseUrl}/v1/chat/completions`;
     const payload: Record<string, unknown> = {
@@ -138,13 +188,13 @@ export class LocalLlmClient implements ILlmClient {
       payload.tools = tools;
       payload.tool_choice = "auto";
     }
-    // gemma-4-31b-it (and other reasoning models) emit a long thinking phase
-    // (reasoning_content) before any visible answer. A feature gate of OFF
-    // (config.yaml agent.thinking.*, sent per-feature) sends the explicit
-    // off-switch to local (OMLX/llama.cpp-style) servers. Hosted providers
-    // do not support this parameter, so it is sent by the local client only.
-    if (!this.enableThinking) {
-      payload.chat_template_kwargs = { enable_thinking: false };
+    applyMaxOutputTokens(payload, opts);
+    // Reasoning models emit a long thinking phase (reasoning_content) before
+    // any visible answer. The global reasoning setting sends the switch to
+    // local servers; `null` means "send nothing" (the capability probe uses
+    // that so probing cannot be degraded by a disabled-thinking payload).
+    if (this.reasoning) {
+      payload.chat_template_kwargs = localReasoningPayload(this.reasoning);
     }
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -152,7 +202,10 @@ export class LocalLlmClient implements ILlmClient {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
     }
 
-    return postWithRetry(endpoint, payload, headers, "LocalLlmClient", { handle503: true });
+    return postWithRetry(endpoint, payload, headers, "LocalLlmClient", {
+      handle503: true,
+      reasoningKeys: LOCAL_REASONING_KEYS,
+    });
   }
 }
 
@@ -163,26 +216,36 @@ export class LocalLlmClient implements ILlmClient {
 export class OpenRouterClient implements ILlmClient {
   private baseUrl: string;
   private apiKey: string;
+  private reasoning: ReasoningSettings | null;
 
-  constructor(apiKey: string, baseUrl: string) {
+  constructor(apiKey: string, baseUrl: string, reasoning: ReasoningSettings | null = null) {
     this.apiKey = apiKey;
     this.baseUrl = ensureChatEndpoint(baseUrl);
+    this.reasoning = reasoning;
   }
 
   async chatCompletion(
     model: string,
     messages: ChatMessage[],
     tools?: ChatTool[] | null,
+    opts?: ChatCompletionOptions,
   ): Promise<ChatResponse> {
     const payload: Record<string, unknown> = { model, messages };
     if (tools) {
       payload.tools = tools;
       payload.tool_choice = "auto";
     }
+    applyMaxOutputTokens(payload, opts);
+    // OpenRouter's native reasoning control — the hosted equivalent of the
+    // local chat_template_kwargs switch. Hosted providers never see
+    // chat_template_kwargs, which they reject.
+    if (this.reasoning) {
+      payload.reasoning = openRouterReasoningPayload(this.reasoning);
+    }
     return postWithRetry(this.baseUrl, payload, {
       "Authorization": `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
-    }, "OpenRouterClient", { handle429: true });
+    }, "OpenRouterClient", { handle429: true, reasoningKeys: OPENROUTER_REASONING_KEYS });
   }
 }
 
@@ -193,16 +256,19 @@ export class OpenRouterClient implements ILlmClient {
 export class OpenAiClient implements ILlmClient {
   private baseUrl: string;
   private apiKey: string;
+  private reasoning: ReasoningSettings | null;
 
-  constructor(apiKey: string, baseUrl: string) {
+  constructor(apiKey: string, baseUrl: string, reasoning: ReasoningSettings | null = null) {
     this.baseUrl = baseUrl.replace(/\/chat\/completions$/, "").replace(/\/$/, "");
     this.apiKey = apiKey;
+    this.reasoning = reasoning;
   }
 
   async chatCompletion(
     model: string,
     messages: ChatMessage[],
     tools?: ChatTool[] | null,
+    opts?: ChatCompletionOptions,
   ): Promise<ChatResponse> {
     const endpoint = `${this.baseUrl}/chat/completions`;
     const payload: Record<string, unknown> = { model, messages };
@@ -210,10 +276,17 @@ export class OpenAiClient implements ILlmClient {
       payload.tools = tools;
       payload.tool_choice = "auto";
     }
+    applyMaxOutputTokens(payload, opts);
+    // OpenAI-compatible hosts take the standard reasoning_effort field when
+    // ON. There is no portable way to force thinking OFF here, so OFF sends
+    // nothing rather than risking a rejected parameter.
+    if (this.reasoning?.enabled) {
+      payload.reasoning_effort = this.reasoning.effort;
+    }
     return postWithRetry(endpoint, payload, {
       "Authorization": `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
-    }, "OpenAiClient", { handle429: true });
+    }, "OpenAiClient", { handle429: true, reasoningKeys: OPENAI_REASONING_KEYS });
   }
 }
 
@@ -226,11 +299,38 @@ async function postWithRetry(
   payload: Record<string, unknown>,
   headers: Record<string, string>,
   clientLabel: string,
-  opts: { handle503?: boolean; handle429?: boolean } = {},
+  opts: { handle503?: boolean; handle429?: boolean; reasoningKeys?: string[] } = {},
 ): Promise<ChatResponse> {
+  let reasoningStripped = false;
   for (let attempt = 0; attempt < DEFAULT_MAX_RETRIES; attempt++) {
+    const attemptStartedAt = Date.now();
     try {
+      debugLog(
+        "llm",
+        `${clientLabel} attempt ${attempt + 1}/${DEFAULT_MAX_RETRIES}: POST ${endpoint} ` +
+          `(${JSON.stringify(payload).length} payload chars)`,
+      );
       const result = await postJsonViaRequestUrl(endpoint, headers, payload);
+      debugLog(
+        "llm",
+        `${clientLabel} attempt ${attempt + 1}: HTTP ${result.status} after ${Date.now() - attemptStartedAt}ms`,
+      );
+
+      // Non-blocking reasoning: a provider that rejects the reasoning fields
+      // outright gets one retry without them, so a model without thinking
+      // support is never gated by the reasoning setting.
+      if (result.status === 400 && !reasoningStripped && opts.reasoningKeys?.length) {
+        const removed = opts.reasoningKeys.filter((key) => key in payload);
+        if (removed.length > 0) {
+          for (const key of removed) delete payload[key];
+          reasoningStripped = true;
+          console.warn(
+            `${clientLabel}: HTTP 400 with ${removed.join(", ")} — retrying without it ` +
+            "(this model or provider does not accept reasoning controls).",
+          );
+          continue;
+        }
+      }
 
       if (opts.handle503 && result.status === 503) {
         const wait = Math.pow(DEFAULT_BACKOFF_BASE, attempt) * 5;
@@ -253,6 +353,13 @@ async function postWithRetry(
       return parseResponse(result.body as ChatCompletionResponse);
     } catch (e) {
       const message = errorMessage(e);
+      if ((e as { isRequestTimeout?: boolean } | null)?.isRequestTimeout) {
+        // Transport timeout — the request already burned the full ceiling;
+        // retrying would re-burn it. Fail the leg so the caller can report a
+        // bounded failure and keep whatever is already on disk.
+        debugLog("llm", `${clientLabel} attempt ${attempt + 1}: TIMEOUT after ${Date.now() - attemptStartedAt}ms`);
+        throw e;
+      }
       if (MEMORY_REJECTION_RE.test(message)) {
         // Prefill/memory rejection — throw immediately, never retry (each
         // attempt would re-prefill the same oversized context).
@@ -365,23 +472,27 @@ function ensureChatEndpoint(baseUrl: string): string {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Build an LLM client for a provider, with the SAME reasoning setting applied
+ * to every provider's native shape (null = send no reasoning params at all).
+ */
 export function getLlmClient(
   provider: string,
   model: string,
   apiKey?: string | null,
   baseUrl?: string | null,
-  enableThinking: boolean = false,
+  reasoning: ReasoningSettings | null = null,
 ): ILlmClient {
   const p = provider.toLowerCase();
 
   if (p === "local") {
-    return new LocalLlmClient(baseUrl || LOCAL_DEFAULT_BASE, model, apiKey || undefined, enableThinking);
+    return new LocalLlmClient(baseUrl || LOCAL_DEFAULT_BASE, model, apiKey || undefined, reasoning);
   }
   if (p === "openai") {
-    return new OpenAiClient(apiKey || "", baseUrl || OPENROUTER_DEFAULT_BASE);
+    return new OpenAiClient(apiKey || "", baseUrl || OPENROUTER_DEFAULT_BASE, reasoning);
   }
   // Default: openrouter
-  return new OpenRouterClient(apiKey || "", baseUrl || OPENROUTER_DEFAULT_BASE);
+  return new OpenRouterClient(apiKey || "", baseUrl || OPENROUTER_DEFAULT_BASE, reasoning);
 }
 
 export function detectProvider(baseUrl: string): string {

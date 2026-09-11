@@ -120,6 +120,8 @@ Obsidian notifies you).
 | API Key | Key for the OpenAI-compatible API. Optional when you use an env var. |
 | API Base URL | Base URL of the API. |
 | Reasoning model | Model for clean, sort, and chat. |
+| Reasoning | Let the model think before answering. Applies to local and hosted providers alike. Off is the default. |
+| Thinking effort | How much thinking to allow when Reasoning is on (`minimal`/`low`/`medium`/`high`). Models without thinking levels ignore it. |
 | Embedding Model | Model for embeddings. |
 | Inbox Folder | Folder to sort. Empty = auto-discover. |
 | Ignore Patterns | One glob per line. Skips matching files and folders. |
@@ -146,7 +148,16 @@ See `config.example.yaml`. Key settings:
 - `preview.enabled` — review-before-write for clean.
 - `preview.ttl_minutes` — how long a pending review stays valid.
 - `query.top_k` — default result count.
+- `reports.context_cap_tokens` — per-community context budget for a generated report.
+- `reports.max_output_tokens` — completion cap for one report call. Bounds a single call.
+- `extraction.context_cap_tokens` — per-call budget for entity extraction. Files batch greedily under it.
+- `extraction.max_output_tokens` — completion cap for one extraction call. Bounds a single call.
+- `comprehension.context_budget_tokens` — conversation budget for the comprehension pass.
 - `index.warn_mb` — warn (in the devtools log) when the index file exceeds this size. sql.js holds ~10× the file size in RAM while building, so a large index is also a RAM event.
+
+These keys live in `config.yaml`. Only the settings the Settings tab renders are written to `data.json` — the last merge layer, so a value stored there wins. A YAML-only key stays out of `data.json`, which keeps `config.yaml` authoritative for it. `embeddingDimensions` is the one exception: it has no Settings-tab row, but it is persisted, because losing a configured value would change the vector width of the index.
+
+Merge order: code defaults ← `<pluginDir>/config.yaml` ← `data.json` (wins).
 
 ## Exclusion
 
@@ -180,6 +191,28 @@ The chat agent auto-detects at startup whether the configured model can emit too
 - **Agentic mode** — the model calls `search_index`/`cite_source` itself. Used when tool calling is detected.
 - **Retrieval fallback mode** — models that cannot call tools (small/quantized models) still get grounded answers: the plugin embeds your question and scans the index deterministically, and the model only writes an answer over the retrieved notes. You are notified once at startup which mode is active; a failed probe (model unreachable, fresh install) stays silent.
 
+## Watching a long build
+
+A cold build runs three stages in order: comprehension, manifest population, and the index build. All three report progress on the same chat line.
+
+**Comprehension** (the slowest prefix, and the part that used to be silent):
+
+```
+Comprehension: turn 3/40 (12/60 tool calls).
+Comprehension: skim → 13/60 tool calls.
+```
+
+**Index build, phase 2** (the only stage that waits on the network):
+
+- A line lands **before** each LLM call — `Enrichment: entity extraction 3/14 — calling <model> (28 sections, ~2.9k tokens)…` — so the first slow response is never a silent gap.
+- While that call is in flight the same line keeps ticking — `… — still waiting (25s)…` — every 5 seconds. **A ticking line means alive; a frozen one means hung.**
+- Each completed call appends its own line (`Enrichment: entity extraction 3/14.`), and the run ends with `Enrichment done: N communities in Xs.`
+- If a response hits `max_output_tokens`, a permanent line reports it: `Enrichment: entity extraction 3/14 hit the output cap — the incomplete final line was dropped (raise extraction.max_output_tokens if this repeats).`
+
+For exact timings, open the developer console (Ctrl/Cmd+Shift+I → Console) and filter on `build-debug`. It prints a timestamped line for each phase boundary, extraction batch, community report, and HTTP attempt (`HTTP 200 after 9412ms`). Diagnostics are temporary and gated by `DEBUG_LOGGING` in `src/debug.ts` — set it to `false` to silence them.
+
+If a single call hangs, it fails after `DEFAULT_REQUEST_TIMEOUT_MS` (10 minutes) instead of waiting forever, and the message tells you so. The core index written in phase 1 stays on disk either way.
+
 ## Important Files
 
 | Path | Role |
@@ -190,16 +223,22 @@ The chat agent auto-detects at startup whether the configured model can emit too
 | `src/indexer/chunker.ts` | Splits notes into header sections. |
 | `src/indexer/embedder.ts` | Calls the embeddings API. |
 | `src/indexer/entity_extractor.ts` | Extracts wikilinks, tags, and phrases. |
-| `src/indexer/db.ts` | Async facade — the only DB entry point (sql.js + disposable worker). |
+| `src/indexer/db.ts` | Async facade — the only DB entry point (sql.js + disposable worker), including the phase-1 `checkpoint()` write. |
 | `src/indexer/db_worker/` | sql.js engine, typed worker protocol, and the worker bundle. |
 | `src/indexer/db_host.ts` | Main-thread host: vault-adapter I/O, browser worker, wasm loading. |
 | `src/indexer/manifest.ts` | Parses `_manifest.md`. |
-| `src/indexer/indexer.ts` | Orchestrates the indexing pipeline. |
+| `src/indexer/indexer.ts` | Orchestrates the two-phase indexing pipeline: a core index (chunk, embed, edges, communities) checkpointed to disk, then non-fatal LLM enrichment. |
+| `src/indexer/completion_output.ts` | Build-side completion handling — detects an output-cap truncation (`finishReason === "length"`) and drops the incomplete final line before the parser sees it. |
 | `src/agent/engine.ts` | Deterministic primitives: file registry, validators, journal, receipts. |
 | `src/agent/conversation.ts` | Shared conversation store (chat + clarify namespaces, bounded history). |
 | `src/agent/clarify.ts` | Portable clarification harness: read manifest, detect uncovered folders, ask (injectable question source), propose ops, diff, guarded write. |
 | `src/agent/tools.ts` | Agent tools, including `apply_edits`, the `clarify` tool, and the `withClarify` compose helper. |
-| `src/chat-review.ts` | Chat renderer — message list, in-flight answer mode for `clarify` calls, and the manifest diff accept/reject card. |
+| `src/chat-review.ts` | Chat renderer — message list, in-flight answer mode for `clarify` calls, the manifest diff accept/reject card, and the live build-progress line (one transient element rewritten in place). |
+| `src/comprehension/skim_format.ts` | The dense one-line-per-note skim report the model reads as a tool result. |
+| `src/comprehension/progress.ts` | Chat progress lines for the comprehension pass (turn and tool-call counts). |
+| `src/progress.ts` | Shared progress helpers — elapsed/format math plus the phase-2 heartbeat that keeps an in-flight LLM call reporting itself. |
+| `src/settings/persist.ts` | Builds the `data.json` payload — only the keys the Settings tab renders, so `config.yaml` keeps authority over the YAML-only tuning. |
+| `src/debug.ts` | TEMPORARY build diagnostics (`debugLog`, `DEBUG_LOGGING`) — timestamped console lines for phase boundaries, LLM batches, and HTTP attempts. Set the flag to `false` to silence. |
 | `src/io/vault_io.ts` | Vault-confined sync file layer — the only place `fs` appears. |
 | `src/agent/llm_client.ts` | API transport for local, OpenAI, and OpenRouter providers. |
 | `src/agent/llm.ts` | Chat loop with tool calling. |

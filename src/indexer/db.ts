@@ -250,6 +250,20 @@ export class DatabaseManager {
     }
   }
 
+  /**
+   * Write the live database to the vault file WITHOUT closing the worker —
+   * the build's phase-1 checkpoint. The worker keeps its in-memory state, so
+   * a later phase can keep mutating it; close() still performs the final
+   * export + write.
+   */
+  async checkpoint(): Promise<void> {
+    const bytes = await this.callDb("export");
+    if (!bytes || bytes.byteLength === 0) return;
+    await this.host.io.mkdirp(path.dirname(this.dbPath));
+    await this.host.io.writeBinaryAtomic(this.dbPath, bytes);
+    this.warnIfOversize(bytes.byteLength);
+  }
+
   /** Hard teardown without writing back (error paths). */
   dispose(): void {
     if (this.channel) {

@@ -81,6 +81,9 @@ export interface DbMethodMap {
   getFolderedFiles: { args: []; result: FolderFileRow[] };
   getWikilinksForFolder: { args: [string]; result: WikilinkCountRow[] };
   getFolderHeadings: { args: [string]; result: FolderHeadingRow[] };
+  /** Snapshot the current database bytes WITHOUT closing the worker — the
+   * build's phase-1 checkpoint (see DatabaseManager.checkpoint). */
+  export: { args: []; result: Uint8Array };
 }
 
 export type DbMethodName = keyof DbMethodMap;

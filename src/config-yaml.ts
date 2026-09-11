@@ -17,15 +17,24 @@
 // scalars, `#` comments, quoted strings, booleans, and integers. Unknown keys
 // are dropped by the explicit mapping below — nothing is guessed.
 
+import { REASONING_EFFORTS, type ReasoningEffort } from "./config";
+
+/** Effort is a closed set — an unknown value is dropped so the default
+ * applies instead of reaching the provider as a nonsense level. */
+function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
+  return typeof value === "string" && (REASONING_EFFORTS as string[]).includes(value)
+    ? (value as ReasoningEffort)
+    : undefined;
+}
+
 export interface YamlPluginSettings {
   apiBaseUrl?: string;
   apiKey?: string;
   embeddingModel?: string;
   embeddingDimensions?: number;
   agentModel?: string;
-  agentThinkingChat?: boolean;
-  agentThinkingBuild?: boolean;
-  agentThinkingSort?: boolean;
+  reasoningEnabled?: boolean;
+  reasoningEffort?: ReasoningEffort;
   manifestFilename?: string;
   inboxFolder?: string;
   ignorePatterns?: string;
@@ -40,6 +49,8 @@ export interface YamlPluginSettings {
   graphInferredMaxEdgesPerSection?: number;
   reportsContextCapTokens?: number;
   extractionContextCapTokens?: number;
+  reportsMaxOutputTokens?: number;
+  extractionMaxOutputTokens?: number;
   comprehensionTokenBudget?: number;
   comprehensionRootExcerptWords?: number;
   comprehensionMocExcerptWords?: number;
@@ -55,6 +66,7 @@ export interface YamlPluginSettings {
   /** Comma-separated hot-topic keywords (the parser is scalar-only). */
   comprehensionHotTopics?: string;
   comprehensionDeepenMaxFolders?: number;
+  comprehensionContextBudgetTokens?: number;
   comprehensionForceRefresh?: boolean;
 }
 
@@ -116,7 +128,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
   const api = tree["api"] as YamlSection | undefined;
   const embedding = tree["embedding"] as YamlSection | undefined;
   const agent = tree["agent"] as YamlSection | undefined;
-  const thinking = tree["thinking"] as YamlSection | undefined;
+  const reasoning = tree["reasoning"] as YamlSection | undefined;
   const manifest = tree["manifest"] as YamlSection | undefined;
   const index = tree["index"] as YamlSection | undefined;
   const query = tree["query"] as YamlSection | undefined;
@@ -137,9 +149,8 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     embeddingModel: str(embedding?.["model"]),
     embeddingDimensions: num(embedding?.["dimensions"]),
     agentModel: str(agent?.["model"]),
-    agentThinkingChat: bool(thinking?.["chat"]),
-    agentThinkingBuild: bool(thinking?.["build"]),
-    agentThinkingSort: bool(thinking?.["sort"]),
+    reasoningEnabled: bool(reasoning?.["enabled"]),
+    reasoningEffort: parseReasoningEffort(reasoning?.["effort"]),
     manifestFilename: str(manifest?.["filename"]),
     indexWarnMb: num(index?.["warn_mb"]),
     queryTopK: num(query?.["top_k"]),
@@ -152,6 +163,8 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     graphInferredMaxEdgesPerSection: num(graph?.["inferred_max_edges_per_section"]),
     reportsContextCapTokens: num(reports?.["context_cap_tokens"]),
     extractionContextCapTokens: num(extraction?.["context_cap_tokens"]),
+    reportsMaxOutputTokens: num(reports?.["max_output_tokens"]),
+    extractionMaxOutputTokens: num(extraction?.["max_output_tokens"]),
     comprehensionTokenBudget: num(comprehension?.["token_budget"]),
     comprehensionRootExcerptWords: num(comprehension?.["root_excerpt_words"]),
     comprehensionMocExcerptWords: num(comprehension?.["moc_excerpt_words"]),
@@ -166,6 +179,7 @@ export function parseConfigYaml(text: string): YamlPluginSettings {
     comprehensionMinCoverage: num(comprehension?.["min_coverage"]),
     comprehensionHotTopics: str(comprehension?.["hot_topics"]),
     comprehensionDeepenMaxFolders: num(comprehension?.["deepen_max_folders"]),
+    comprehensionContextBudgetTokens: num(comprehension?.["context_budget_tokens"]),
     comprehensionForceRefresh: bool(comprehension?.["force_refresh"]),
   };
 }

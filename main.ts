@@ -8,10 +8,11 @@
 
 import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import type { SettingDefinition, SettingDefinitionItem } from "obsidian";
-import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME } from "./src/config";
+import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME, REASONING_EFFORTS, type ReasoningEffort } from "./src/config";
 import { parseConfigYaml, mergeConfigLayers } from "./src/config-yaml";
 import { errorMessage } from "./src/errors";
 import { runClearAction } from "./src/settings/clear_actions";
+import { settingsTabPayload } from "./src/settings/persist";
 import { detectToolCallSupport, probeConnection } from "./src/agent/capability";
 import { closeChatSession, closeClarifySession } from "./src/agent/chat_session";
 import {
@@ -33,7 +34,7 @@ import {
   REVIEW_VIEW_TYPE,
   ReviewView,
 } from "./src/container-sidebar";
-import type { ReviewSpec, SortResultPayload, ChatReviewSpec, ChatIntent } from "./src/types";
+import type { ReviewSpec, SortResultPayload, ChatReviewSpec, ChatIntent, BuildProgressCallback } from "./src/types";
 
 // ---------------------------------------------------------------------------
 // Plugin Settings
@@ -49,12 +50,10 @@ interface PluginSettings {
   // Embedding dimensions come from config (config.yaml → embedding.dimensions,
   // overridable in the Settings tab). 0 = unknown (legacy fallback applies).
   embeddingDimensions: number;
-  // Per-feature reasoning gate — config.yaml agent.thinking.{chat,build,sort}
-  // (overridable in the Settings tab). Reasoning models (gemma-4-31b-it)
-  // think before answering; off by default (measured: no quality gain).
-  agentThinkingChat: boolean;
-  agentThinkingBuild: boolean;
-  agentThinkingSort: boolean;
+  // The ONE reasoning control — shared by local and hosted providers and
+  // applied to every LLM call (see src/config.ts ReasoningSettings).
+  reasoningEnabled: boolean;
+  reasoningEffort: ReasoningEffort;
   inboxFolder: string;
   ignorePatterns: string;
   manifestFilename: string;
@@ -76,6 +75,10 @@ interface PluginSettings {
   graphInferredMaxEdgesPerSection: number;
   reportsContextCapTokens: number;
   extractionContextCapTokens: number;
+  // Output caps for the build-side LLM calls (config.yaml
+  // reports.extraction `max_output_tokens`) — bounds one call's completion.
+  reportsMaxOutputTokens: number;
+  extractionMaxOutputTokens: number;
   // Vault-comprehension tuning — config.yaml `comprehension:` section
   // (single source of truth; deliberately NOT in the Settings tab —
   // advanced tuning). hot_topics is comma-separated in YAML (the parser is
@@ -94,6 +97,7 @@ interface PluginSettings {
   comprehensionMinCoverage: number;
   comprehensionHotTopics: string;
   comprehensionDeepenMaxFolders: number;
+  comprehensionContextBudgetTokens: number;
 }
 
 const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
@@ -102,9 +106,8 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   agentModel: "gpt-4o-mini",
   embeddingModel: "text-embedding-3-small",
   embeddingDimensions: 0,
-  agentThinkingChat: false,
-  agentThinkingBuild: false,
-  agentThinkingSort: false,
+  reasoningEnabled: false,
+  reasoningEffort: "medium",
   inboxFolder: "",
   ignorePatterns: "",
   manifestFilename: "_manifest.md",
@@ -120,6 +123,8 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   graphInferredMaxEdgesPerSection: 3,
   reportsContextCapTokens: 3000,
   extractionContextCapTokens: 3000,
+  reportsMaxOutputTokens: 1000,
+  extractionMaxOutputTokens: 1000,
   comprehensionTokenBudget: 4000,
   comprehensionRootExcerptWords: 100,
   comprehensionMocExcerptWords: 100,
@@ -134,6 +139,7 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   comprehensionMinCoverage: 0.6,
   comprehensionHotTopics: "",
   comprehensionDeepenMaxFolders: 3,
+  comprehensionContextBudgetTokens: 6000,
 };
 
 // Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
@@ -218,6 +224,22 @@ const SETTING_META: SettingMeta[] = [
     placeholder: "text-embedding-3-small",
   },
   {
+    kind: "dropdown",
+    key: "reasoningEnabled",
+    name: "Reasoning",
+    desc: "Let the model think before answering. Off is faster and keeps extraction output clean; On suits heavy reasoning models. Works for local and hosted providers alike.",
+    options: { "true": "On", "false": "Off" },
+  },
+  {
+    kind: "dropdown",
+    key: "reasoningEffort",
+    name: "Thinking effort",
+    desc: "How much thinking to allow when Reasoning is On. Providers or models without thinking levels simply ignore it.",
+    options: Object.fromEntries(
+      REASONING_EFFORTS.map((effort) => [effort, effort.charAt(0).toUpperCase() + effort.slice(1)]),
+    ),
+  },
+  {
     kind: "button",
     action: "test",
     name: "Test connection",
@@ -262,6 +284,16 @@ const SETTING_META: SettingMeta[] = [
   },
 ];
 
+// Only the keys the Settings tab renders reach data.json: config.yaml owns
+// every other knob, and data.json is the LAST merge layer. embeddingDimensions
+// is the exception — losing it would change the vector width of the index.
+const PERSISTED_SETTING_KEYS: readonly (keyof PluginSettings)[] = [
+  ...SETTING_META.filter((meta): meta is SettingValueMeta => meta.kind !== "button").map(
+    (meta) => meta.key,
+  ),
+  "embeddingDimensions",
+];
+
 // Single write path for both renderers: normalize, store, persist, apply.
 function normalizeSettingValue(key: keyof PluginSettings, value: unknown): unknown {
   if (typeof value !== "string") return value;
@@ -274,6 +306,11 @@ function normalizeSettingValue(key: keyof PluginSettings, value: unknown): unkno
       return value.trim();
     case "manifestFilename":
       return value.trim() || "_manifest.md";
+    case "reasoningEnabled":
+      // The dropdown stores "true"/"false" strings; the setting is a boolean.
+      return value === "true";
+    case "reasoningEffort":
+      return (REASONING_EFFORTS as string[]).includes(value) ? value : "medium";
     default:
       return value;
   }
@@ -487,11 +524,10 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       },
       agent: {
         model: s.agentModel,
-        thinking: {
-          chat: s.agentThinkingChat,
-          build: s.agentThinkingBuild,
-          sort: s.agentThinkingSort,
-        },
+      },
+      reasoning: {
+        enabled: s.reasoningEnabled,
+        effort: s.reasoningEffort,
       },
       inboxFolder: s.inboxFolder,
       ignorePatterns: s.ignorePatterns,
@@ -515,11 +551,14 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       },
       reports: {
         contextCapTokens: s.reportsContextCapTokens,
+        maxOutputTokens: s.reportsMaxOutputTokens,
       },
       extraction: {
         contextCapTokens: s.extractionContextCapTokens,
+        maxOutputTokens: s.extractionMaxOutputTokens,
       },
       comprehension: {
+        contextBudgetTokens: s.comprehensionContextBudgetTokens ?? settings.comprehension.contextBudgetTokens,
         tokenBudget: s.comprehensionTokenBudget ?? settings.comprehension.tokenBudget,
         rootExcerptWords: s.comprehensionRootExcerptWords ?? settings.comprehension.rootExcerptWords,
         mocExcerptWords: s.comprehensionMocExcerptWords ?? settings.comprehension.mocExcerptWords,
@@ -578,11 +617,10 @@ export default class VaultMaintenancePlugin extends Plugin {
       },
       agent: {
         model: this.pluginSettings.agentModel,
-        thinking: {
-          chat: this.pluginSettings.agentThinkingChat,
-          build: this.pluginSettings.agentThinkingBuild,
-          sort: this.pluginSettings.agentThinkingSort,
-        },
+      },
+      reasoning: {
+        enabled: this.pluginSettings.reasoningEnabled,
+        effort: this.pluginSettings.reasoningEffort,
       },
       inboxFolder: this.pluginSettings.inboxFolder,
       ignorePatterns: this.pluginSettings.ignorePatterns,
@@ -603,9 +641,11 @@ export default class VaultMaintenancePlugin extends Plugin {
       },
       reports: {
         contextCapTokens: this.pluginSettings.reportsContextCapTokens,
+        maxOutputTokens: this.pluginSettings.reportsMaxOutputTokens,
       },
       extraction: {
         contextCapTokens: this.pluginSettings.extractionContextCapTokens,
+        maxOutputTokens: this.pluginSettings.extractionMaxOutputTokens,
       },
     });
 
@@ -724,7 +764,7 @@ export default class VaultMaintenancePlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.pluginSettings);
+    await this.saveData(settingsTabPayload(this.pluginSettings, PERSISTED_SETTING_KEYS));
   }
 
   // ------------------------------------------------------------------
@@ -757,12 +797,18 @@ export default class VaultMaintenancePlugin extends Plugin {
         // The warm build is a headless run that shares the chat lock: while
         // any chat-surface run is in flight it is rejected with the same
         // busy message (protects the local LLM from concurrent load).
+        // Live progress rewrites ONE persistent Notice in place — without it
+        // this path is a black box from phase 1 to phase 2. The run result
+        // (a string) doubles as the busy sentinel: null means it was rejected.
+        notice.hide();
+        const progressNotice = new Notice("Building index...", 0);
+        const onProgress: BuildProgressCallback = (message) => progressNotice.setMessage(message);
         const result = await withChatLock(
           "build",
-          () => runBuildIndex(vaultPath),
+          () => runBuildIndex(vaultPath, onProgress),
           () => null,
         );
-        notice.hide();
+        progressNotice.hide();
         if (result === null) {
           new Notice(chatBusyMessage());
           return;
@@ -926,10 +972,10 @@ export default class VaultMaintenancePlugin extends Plugin {
   // never hogged by the build (defect 1: no more follow-up hijack).
   private chatQuery(intent: ChatIntent): ChatReviewSpec["query"] {
     let buildStagePending = intent === "build";
-    return async (question, ask) => {
+    return async (question, ask, onProgress) => {
       const runStage = buildStagePending;
       buildStagePending = false;
-      return runChatRouter(question, ask, runStage);
+      return runChatRouter(question, ask, runStage, onProgress);
     };
   }
 }

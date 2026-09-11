@@ -34,14 +34,15 @@ embedding:
 agent:
   model: gemma-4-31b-it-4bit           # model for clean, sort, and chat.
 
-# Per-feature reasoning gate (chat/build/sort toggle independently).
-# Reasoning models (gemma-4-31b-it) think before answering. Default OFF
-# (measured: no quality gain for sort/build on local hardware) — turn a
-# feature ON only where quality justifies the latency.
-thinking:
-  chat: false
-  build: false
-  sort: false
+# The ONE reasoning control — applies to EVERY provider (local and hosted).
+# Reasoning models think before answering, which costs output tokens and time;
+# for structured work (extraction, reports) that thinking is discarded by the
+# parser, so OFF is the default. `effort` is honored where the provider or
+# model exposes thinking levels; anything without them simply ignores it (and
+# a provider that rejects the parameter is retried once without it).
+reasoning:
+  enabled: false        # false -> thinking is switched OFF on every call
+  effort: medium        # minimal | low | medium | high
 
 # Chat tool-calling is AUTO-DETECTED (one probe call at startup, cached per
 # model): models that can't emit tool calls automatically get the retrieval
@@ -83,6 +84,10 @@ graph:
 #     cap are dropped in node_key order.
 reports:
   context_cap_tokens: 3000
+  # max_output_tokens: completion cap per report call. A provider that hits the
+  # cap returns finish_reason "length"; the plugin then drops the incomplete
+  # final line and reports the truncation in the chat progress line.
+  max_output_tokens: 1000
 
 # LLM entity-extraction tuning — the build-side semantic-graph pass
 # (Phase 5): typed entities + relationships become semantic EDGES, queried
@@ -91,8 +96,13 @@ reports:
 #   context_cap_tokens: token budget per extraction LLM call — also the
 #     per-file cap. Files are batched greedily under this budget; higher =
 #     fewer LLM calls per build (richer context), more tokens per call.
+#   max_output_tokens: completion cap per extraction call. Without it the
+#     provider applies its own ceiling (up to 65536 tokens on some hosted
+#     models), so one slow call can run for many minutes. The extraction
+#     prompt already limits itself to 30 ENTITY and 30 REL lines.
 extraction:
   context_cap_tokens: 3000
+  max_output_tokens: 2000
 
 # Vault-comprehension tuning — the read-the-vault-like-a-book pipeline
 # (batch skim, assumption ledger, status machine; src/comprehension/).
@@ -116,6 +126,7 @@ comprehension:
   hot_topics: ""                  # comma-separated keywords → optional clarification.
   deepen_max_folders: 3           # folders the progressive-deepening pass re-reads.
   force_refresh: false            # set true to always re-run comprehension (ignore a valid summary card).
+  context_budget_tokens: 6000     # estimated-token budget for the conversation window; older turns are compacted away when it is exceeded.
 
 index:
   warn_mb: 256                # warning threshold for the index file size (MB). sql.js

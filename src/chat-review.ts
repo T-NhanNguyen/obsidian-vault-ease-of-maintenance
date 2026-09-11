@@ -7,7 +7,7 @@
 
 import { MarkdownView, Notice } from "obsidian";
 import type { ReviewHost } from "./review-host";
-import type { ChatQueryResponse, ChatQueryResult } from "./types";
+import type { ChatQueryResponse, ChatQueryResult, BuildProgressCallback } from "./types";
 import type { App } from "obsidian";
 import { settings } from "./config";
 import type { ClarifyArgs, ClarifyAnswerProvider } from "./agent/tools";
@@ -29,7 +29,7 @@ const REJECT_BUTTON_LABEL = "Reject";
 
 export function renderChatReview(
     host: ReviewHost,
-    query: (question: string, ask?: ClarifyAnswerProvider) => Promise<ChatQueryResponse>,
+    query: (question: string, ask?: ClarifyAnswerProvider, onProgress?: BuildProgressCallback) => Promise<ChatQueryResponse>,
     initialQuestion?: string,
 ): void {
     const container = host.contentEl;
@@ -113,7 +113,7 @@ async function runQuery(
     messages: HTMLElement,
     sendBtn: HTMLButtonElement,
     input: HTMLInputElement,
-    query: (question: string, ask?: ClarifyAnswerProvider) => Promise<ChatQueryResponse>,
+    query: (question: string, ask?: ClarifyAnswerProvider, onProgress?: BuildProgressCallback) => Promise<ChatQueryResponse>,
     host: ReviewHost,
     ask: ClarifyAnswerProvider
 ): Promise<void> {
@@ -122,8 +122,22 @@ async function runQuery(
     input.disabled = true;
     const loading = messages.createDiv({ cls: "nm-msg nm-msg-assistant nm-msg-loading", text: LOADING_LABEL });
 
+    // Live build progress: permanent phase messages append; per-call counts
+    // ("extraction 7/23") update one transient line in place.
+    let progressEl: HTMLElement | null = null;
+    const onProgress: BuildProgressCallback = (message, kind = "status") => {
+        if (kind === "progress") {
+            progressEl = updateProgressStatus(messages, progressEl, message);
+            return;
+        }
+        // A permanent line closes the transient one, so the next progress
+        // event starts a fresh line below it instead of editing an old one.
+        progressEl = null;
+        appendStatus(messages, message);
+    };
+
     try {
-        const data = await query(question, ask);
+        const data = await query(question, ask, onProgress);
         loading.remove();
         const answerEl = await appendMessage(messages, "assistant", data.answer || "", host);
         renderSources(answerEl, data.results || [], host, data.citationMap);
@@ -212,6 +226,19 @@ async function renderProposal(
 function appendStatus(messages: HTMLElement, text: string): void {
     messages.createDiv({ cls: "nm-msg nm-msg-assistant nm-clarify-status", text });
     messages.scrollTop = messages.scrollHeight;
+}
+
+/** Transient progress line — one element rewritten in place, so a per-call
+ * count cannot flood the message list. */
+function updateProgressStatus(
+    messages: HTMLElement,
+    element: HTMLElement | null,
+    text: string
+): HTMLElement {
+    const target = element ?? messages.createDiv({ cls: "nm-msg nm-msg-assistant nm-clarify-status" });
+    target.setText(text);
+    messages.scrollTop = messages.scrollHeight;
+    return target;
 }
 
 async function appendMessage(

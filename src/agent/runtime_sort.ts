@@ -4,7 +4,7 @@
 
 import * as crypto from "crypto";
 import * as path from "path";
-import { settings, INDEX_DB_SUFFIX, thinkingEnabledFor } from "../config";
+import { settings, INDEX_DB_SUFFIX } from "../config";
 import { errorMessage } from "../errors";
 import { LLMClient } from "./llm";
 import * as toolImpl from "./tools";
@@ -418,9 +418,7 @@ async function generateSuggestions(journal: Journal, manifestConstitution: strin
   const system = fillTemplate(SORT_SUGGESTIONS_TEMPLATES.system, { manifest: manifestSection });
 
   try {
-    const [r] = await new LLMClient(undefined, undefined, {
-      enableThinking: thinkingEnabledFor("sort"),
-    }).chat(system, task, [buildComprehendVaultTool()], 1);
+    const [r] = await new LLMClient().chat(system, task, [buildComprehendVaultTool()], 1);
     return r.trim();
   } catch {
     return "";
