@@ -126,6 +126,11 @@ Obsidian notifies you).
 | Inbox Folder | Folder to sort. Empty = auto-discover. |
 | Ignore Patterns | One glob per line. Skips matching files and folders. |
 | Manifest Filename | Name of the vault manifest. Default: `_manifest.md`. |
+| Entity extraction output cap | Most tokens one entity-extraction call may generate. Raise it when the build reports that extraction hit the output cap. |
+| Entity extraction batch budget | Tokens of note text per extraction call. Notes batch under this budget — a smaller batch asks for fewer entities, so the model finishes inside the output cap. |
+| Community report output cap | Most tokens one community-report call may generate. Raise it when the build reports that reports hit the output cap. |
+| Community report context budget | Tokens of member-note text per community report. Higher feeds more evidence into each report for global-mode answers. |
+| Comprehension window budget | Estimated tokens of the growing comprehension conversation. Older turns are compacted away beyond it. |
 
 ## Review UI
 
@@ -148,14 +153,14 @@ See `config.example.yaml`. Key settings:
 - `preview.enabled` — review-before-write for clean.
 - `preview.ttl_minutes` — how long a pending review stays valid.
 - `query.top_k` — default result count.
-- `reports.context_cap_tokens` — per-community context budget for a generated report.
-- `reports.max_output_tokens` — completion cap for one report call. Bounds a single call.
-- `extraction.context_cap_tokens` — per-call budget for entity extraction. Files batch greedily under it.
-- `extraction.max_output_tokens` — completion cap for one extraction call. Bounds a single call.
-- `comprehension.context_budget_tokens` — conversation budget for the comprehension pass.
+- `reports.context_cap_tokens` — per-community context budget for a generated report. Also a Settings-tab control.
+- `reports.max_output_tokens` — completion cap for one report call. Bounds a single call. Also a Settings-tab control.
+- `extraction.context_cap_tokens` — per-call budget for entity extraction. Files batch greedily under it. Also a Settings-tab control.
+- `extraction.max_output_tokens` — completion cap for one extraction call. Bounds a single call. Also a Settings-tab control.
+- `comprehension.context_budget_tokens` — conversation budget for the comprehension pass. Also a Settings-tab control.
 - `index.warn_mb` — warn (in the devtools log) when the index file exceeds this size. sql.js holds ~10× the file size in RAM while building, so a large index is also a RAM event.
 
-These keys live in `config.yaml`. Only the settings the Settings tab renders are written to `data.json` — the last merge layer, so a value stored there wins. A YAML-only key stays out of `data.json`, which keeps `config.yaml` authoritative for it. `embeddingDimensions` is the one exception: it has no Settings-tab row, but it is persisted, because losing a configured value would change the vector width of the index.
+These keys live in `config.yaml`, and the five build-side token caps ALSO have Settings-tab rows: `reports.max_output_tokens`, `reports.context_cap_tokens`, `extraction.max_output_tokens`, `extraction.context_cap_tokens`, and `comprehension.context_budget_tokens`. Edit one in the Settings tab and it is written to `data.json` — the last merge layer, so your edit wins over `config.yaml` from then on. Every other YAML-only key stays out of `data.json`, which keeps `config.yaml` authoritative for it. `embeddingDimensions` is the one exception: it has no Settings-tab row, but it is persisted, because losing a configured value would change the vector width of the index.
 
 Merge order: code defaults ← `<pluginDir>/config.yaml` ← `data.json` (wins).
 
@@ -217,7 +222,7 @@ If a single call hangs, it fails after `DEFAULT_REQUEST_TIMEOUT_MS` (10 minutes)
 
 | Path | Role |
 |---|---|
-| `main.ts` | Plugin entry. Registers commands and settings. |
+| `main.ts` | Plugin entry. Registers commands and settings; the settings tab renders every row through `renderImperativeSetting` / `toSettingDefinition`, with the bounded token-cap fields sharing `renderNumberSetting`. |
 | `src/config.ts` | Settings types and API key resolution. |
 | `src/indexer/scanner.ts` | Scans the vault for markdown files. |
 | `src/indexer/chunker.ts` | Splits notes into header sections. |
@@ -238,6 +243,8 @@ If a single call hangs, it fails after `DEFAULT_REQUEST_TIMEOUT_MS` (10 minutes)
 | `src/comprehension/progress.ts` | Chat progress lines for the comprehension pass (turn and tool-call counts). |
 | `src/progress.ts` | Shared progress helpers — elapsed/format math plus the phase-2 heartbeat that keeps an in-flight LLM call reporting itself. |
 | `src/settings/persist.ts` | Builds the `data.json` payload — only the keys the Settings tab renders, so `config.yaml` keeps authority over the YAML-only tuning. |
+| `src/settings/schema.ts` | The settings schema: `PluginSettings`, `DEFAULT_PLUGIN_SETTINGS`, the one `SETTING_META` table that drives both renderers (including the five numeric token-cap rows), `PERSISTED_SETTING_KEYS`, `parseTokenCap` (bounds `TOKEN_CAP_MIN`/`TOKEN_CAP_MAX`/`TOKEN_CAP_STEP`), and `normalizeSettingValue`. |
+| `src/settings/nested.ts` | `pluginSettingsToNested` plus `resolveEmbeddingDimensions` — the single flat-to-nested projection used by BOTH plugin startup and Settings-tab edits, so no settings section can be wired into one path and forgotten in the other. |
 | `src/debug.ts` | TEMPORARY build diagnostics (`debugLog`, `DEBUG_LOGGING`) — timestamped console lines for phase boundaries, LLM batches, and HTTP attempts. Set the flag to `false` to silence. |
 | `src/io/vault_io.ts` | Vault-confined sync file layer — the only place `fs` appears. |
 | `src/agent/llm_client.ts` | API transport for local, OpenAI, and OpenRouter providers. |

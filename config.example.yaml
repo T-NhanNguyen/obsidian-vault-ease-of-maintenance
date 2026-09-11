@@ -77,7 +77,8 @@ graph:
   inferred_max_edges_per_section: 3
 
 # Community-report tuning — the build-side LLM report pass (Phase 4).
-# Deliberately NOT in the Settings tab (advanced tuning).
+# Both token caps are ALSO Settings-tab rows: edit one there and it is stored in
+# data.json, which overrides this file.
 #   context_cap_tokens: per-community token budget for the member-section
 #     context a report is generated from. Higher = richer reports (better
 #     global-mode answers), more LLM tokens per build. Sections beyond the
@@ -91,22 +92,24 @@ reports:
 
 # LLM entity-extraction tuning — the build-side semantic-graph pass
 # (Phase 5): typed entities + relationships become semantic EDGES, queried
-# through the hybrid search's traversal. Deliberately NOT in the Settings
-# tab (advanced tuning).
+# through the hybrid search's traversal. Both token caps are ALSO Settings-tab
+# rows; editing one there overrides this file.
 #   context_cap_tokens: token budget per extraction LLM call — also the
 #     per-file cap. Files are batched greedily under this budget; higher =
 #     fewer LLM calls per build (richer context), more tokens per call.
 #   max_output_tokens: completion cap per extraction call. Without it the
 #     provider applies its own ceiling (up to 65536 tokens on some hosted
-#     models), so one slow call can run for many minutes. The extraction
-#     prompt already limits itself to 30 ENTITY and 30 REL lines.
+#     models), so one slow call can run for many minutes. The prompt asks for
+#     at most 30 ENTITY and 30 REL lines, but models overshoot — a cap of 1000
+#     truncated real output on a ~3000-token batch, so 2000 is the safer floor.
 extraction:
   context_cap_tokens: 3000
   max_output_tokens: 2000
 
 # Vault-comprehension tuning — the read-the-vault-like-a-book pipeline
 # (batch skim, assumption ledger, status machine; src/comprehension/).
-# Deliberately NOT in the Settings tab (advanced tuning). All excerpt sizes
+# Only context_budget_tokens is a Settings-tab row (it overrides this file).
+# All excerpt sizes
 # are WORD counts (deterministic token proxy). hot_topics is a
 # comma-separated list — a hit in a newly sampled file fires an optional
 # clarification.
@@ -126,7 +129,7 @@ comprehension:
   hot_topics: ""                  # comma-separated keywords → optional clarification.
   deepen_max_folders: 3           # folders the progressive-deepening pass re-reads.
   force_refresh: false            # set true to always re-run comprehension (ignore a valid summary card).
-  context_budget_tokens: 6000     # estimated-token budget for the conversation window; older turns are compacted away when it is exceeded.
+  context_budget_tokens: 6000     # estimated-token budget for the conversation window; older turns are compacted away when it is exceeded. Settings-tab row — overrides this file.
 
 index:
   warn_mb: 256                # warning threshold for the index file size (MB). sql.js

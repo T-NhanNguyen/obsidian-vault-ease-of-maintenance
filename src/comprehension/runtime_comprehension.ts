@@ -614,7 +614,7 @@ async function runMandatoryClarify(
 // conversation exceeds the budget. No extra LLM call is ever made for this.
 // ---------------------------------------------------------------------------
 
-/** Context budget in tokens (rule of thumb: chars / 4 ≈ tokens). */
+/** Fallback budget (chars / 4 ≈ tokens) when no comprehension.context_budget_tokens is set. */
 const COMPREHENSION_CONTEXT_BUDGET_TOKENS = 6000;
 
 function estimateTokens(messages: ChatMessage[]): number {
@@ -716,7 +716,10 @@ async function runLoop(
     );
 
     upsertStateCard(messages, buildStateCard(ctx));
-    compactConversation(messages, COMPREHENSION_CONTEXT_BUDGET_TOKENS);
+    compactConversation(
+      messages,
+      settings.comprehension.contextBudgetTokens ?? COMPREHENSION_CONTEXT_BUDGET_TOKENS,
+    );
 
     const response = await llm.chatCompletion(modelName, messages, openaiTools());
     const toolCalls = response.toolCalls ?? [];

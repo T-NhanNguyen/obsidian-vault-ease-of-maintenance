@@ -11,7 +11,7 @@ const SETTINGS = {
   apiBaseUrl: "http://127.0.0.1:8000/v1",
   embeddingDimensions: 768,
   graphClusterThreshold: 0.5,
-  extractionMaxOutputTokens: 1000,
+  graphInferredThreshold: 2,
   comprehensionTokenBudget: 4000,
 };
 
@@ -30,7 +30,7 @@ describe("settingsTabPayload", () => {
     const payload = settingsTabPayload(SETTINGS, PERSISTED);
 
     expect(payload).not.toHaveProperty("graphClusterThreshold");
-    expect(payload).not.toHaveProperty("extractionMaxOutputTokens");
+    expect(payload).not.toHaveProperty("graphInferredThreshold");
     expect(payload).not.toHaveProperty("comprehensionTokenBudget");
     expect(Object.keys(payload)).toEqual([...PERSISTED]);
   });

@@ -8,11 +8,26 @@
 
 import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import type { SettingDefinition, SettingDefinitionItem } from "obsidian";
-import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME, REASONING_EFFORTS, type ReasoningEffort } from "./src/config";
+import { updateSettings, settings, INDEX_DB_SUFFIX, CONFIG_FILENAME } from "./src/config";
 import { parseConfigYaml, mergeConfigLayers } from "./src/config-yaml";
 import { errorMessage } from "./src/errors";
 import { runClearAction } from "./src/settings/clear_actions";
 import { settingsTabPayload } from "./src/settings/persist";
+import { pluginSettingsToNested } from "./src/settings/nested";
+import {
+  DEFAULT_PLUGIN_SETTINGS,
+  PERSISTED_SETTING_KEYS,
+  SETTING_META,
+  TOKEN_CAP_MAX,
+  TOKEN_CAP_MIN,
+  TOKEN_CAP_STEP,
+  normalizeSettingValue,
+  parseTokenCap,
+  type PluginSettings,
+  type SettingButtonMeta,
+  type SettingMeta,
+  type SettingValueMeta,
+} from "./src/settings/schema";
 import { detectToolCallSupport, probeConnection } from "./src/agent/capability";
 import { closeChatSession, closeClarifySession } from "./src/agent/chat_session";
 import {
@@ -37,284 +52,11 @@ import {
 import type { ReviewSpec, SortResultPayload, ChatReviewSpec, ChatIntent, BuildProgressCallback } from "./src/types";
 
 // ---------------------------------------------------------------------------
-// Plugin Settings
+// Setting tab
 // ---------------------------------------------------------------------------
-
-type ReviewContainer = "sidebar" | "modal";
-
-interface PluginSettings {
-  apiKey: string;
-  apiBaseUrl: string;
-  agentModel: string;
-  embeddingModel: string;
-  // Embedding dimensions come from config (config.yaml → embedding.dimensions,
-  // overridable in the Settings tab). 0 = unknown (legacy fallback applies).
-  embeddingDimensions: number;
-  // The ONE reasoning control — shared by local and hosted providers and
-  // applied to every LLM call (see src/config.ts ReasoningSettings).
-  reasoningEnabled: boolean;
-  reasoningEffort: ReasoningEffort;
-  inboxFolder: string;
-  ignorePatterns: string;
-  manifestFilename: string;
-  reviewContainer: ReviewContainer;
-  // Index-size warning threshold (MB) — config.yaml index.warn_mb; when the
-  // exported index exceeds it, DatabaseManager warns (sql.js builds hold ~10×
-  // the file size in RAM).
-  indexWarnMb: number;
-  // GraphRAG tuning — config.yaml query: + graph: + reports: sections
-  // (single source of truth; deliberately NOT in the Settings tab —
-  // advanced tuning).
-  queryTopK: number;
-  queryDepth: number;
-  queryMaxFanOut: number;
-  queryMaxSeeds: number;
-  queryTopReports: number;
-  graphClusterThreshold: number;
-  graphInferredThreshold: number;
-  graphInferredMaxEdgesPerSection: number;
-  reportsContextCapTokens: number;
-  extractionContextCapTokens: number;
-  // Output caps for the build-side LLM calls (config.yaml
-  // reports.extraction `max_output_tokens`) — bounds one call's completion.
-  reportsMaxOutputTokens: number;
-  extractionMaxOutputTokens: number;
-  // Vault-comprehension tuning — config.yaml `comprehension:` section
-  // (single source of truth; deliberately NOT in the Settings tab —
-  // advanced tuning). hot_topics is comma-separated in YAML (the parser is
-  // scalar-only) and split into an array when applied.
-  comprehensionTokenBudget: number;
-  comprehensionRootExcerptWords: number;
-  comprehensionMocExcerptWords: number;
-  comprehensionRegularExcerptWords: number;
-  comprehensionSampleTargetFiles: number;
-  comprehensionVerifyTopK: number;
-  comprehensionVerifyQuestionsPerRound: number;
-  comprehensionToolCallBudget: number;
-  comprehensionSoftThreshold: number;
-  comprehensionConfirmThreshold: number;
-  comprehensionLowConfidenceThreshold: number;
-  comprehensionMinCoverage: number;
-  comprehensionHotTopics: string;
-  comprehensionDeepenMaxFolders: number;
-  comprehensionContextBudgetTokens: number;
-}
-
-const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
-  apiKey: "",
-  apiBaseUrl: "https://api.openai.com/v1",
-  agentModel: "gpt-4o-mini",
-  embeddingModel: "text-embedding-3-small",
-  embeddingDimensions: 0,
-  reasoningEnabled: false,
-  reasoningEffort: "medium",
-  inboxFolder: "",
-  ignorePatterns: "",
-  manifestFilename: "_manifest.md",
-  reviewContainer: "sidebar",
-  indexWarnMb: 256,
-  queryTopK: 5,
-  queryDepth: 1,
-  queryMaxFanOut: 8,
-  queryMaxSeeds: 8,
-  queryTopReports: 3,
-  graphClusterThreshold: 0.5,
-  graphInferredThreshold: 0.7,
-  graphInferredMaxEdgesPerSection: 3,
-  reportsContextCapTokens: 3000,
-  extractionContextCapTokens: 3000,
-  reportsMaxOutputTokens: 1000,
-  extractionMaxOutputTokens: 1000,
-  comprehensionTokenBudget: 4000,
-  comprehensionRootExcerptWords: 100,
-  comprehensionMocExcerptWords: 100,
-  comprehensionRegularExcerptWords: 40,
-  comprehensionSampleTargetFiles: 20,
-  comprehensionVerifyTopK: 3,
-  comprehensionVerifyQuestionsPerRound: 3,
-  comprehensionToolCallBudget: 60,
-  comprehensionSoftThreshold: 0.7,
-  comprehensionConfirmThreshold: 0.8,
-  comprehensionLowConfidenceThreshold: 0.4,
-  comprehensionMinCoverage: 0.6,
-  comprehensionHotTopics: "",
-  comprehensionDeepenMaxFolders: 3,
-  comprehensionContextBudgetTokens: 6000,
-};
 
 // Unique ids for clean/sort review specs (ReviewCore dedupes by spec key).
 let reviewSeq = 0;
-
-// Embedding dimensions come from config (config.yaml → embedding.dimensions,
-// overridable in the Settings tab). The legacy name-based inference
-// (1536/3072) is only a last-resort fallback when no dimension was set.
-function resolveEmbeddingDimensions(model: string, configured: number): number {
-  if (configured > 0) return configured;
-  return model.includes("large") ? 3072 : 1536;
-}
-
-// ---------------------------------------------------------------------------
-// Setting Tab — metadata-driven dual-path rendering
-// ---------------------------------------------------------------------------
-// One SETTING_META table drives both rendering paths so the two surfaces
-// cannot drift: the declarative getSettingDefinitions() (Obsidian 1.13.0+
-// settings search) and the imperative display() (Obsidian < 1.13.0).
-
-interface SettingMetaBase {
-  name: string;
-  desc: string;
-  placeholder?: string;
-  buttonText?: string;
-}
-
-/** A value-bearing setting — stores one PluginSettings key. */
-interface SettingValueMeta extends SettingMetaBase {
-  kind: "text" | "textarea" | "dropdown";
-  key: keyof PluginSettings;
-  rows?: number;
-  options?: Record<string, string>;
-}
-
-/** Which handler a button row runs. */
-type SettingButtonAction = "test" | "clearIndex" | "clearComprehension";
-
-/** An action row — runs a handler on click, stores nothing (no key). */
-interface SettingButtonMeta extends SettingMetaBase {
-  kind: "button";
-  buttonText: string;
-  action: SettingButtonAction;
-}
-
-type SettingMeta = SettingValueMeta | SettingButtonMeta;
-
-const SETTING_META: SettingMeta[] = [
-  {
-    kind: "dropdown",
-    key: "reviewContainer",
-    name: "Review container",
-    desc: "Where clean/sort reviews and chat open: a docked sidebar pane or a centered modal overlay.",
-    options: { sidebar: "Sidebar pane", modal: "Modal overlay" },
-  },
-  {
-    kind: "text",
-    key: "apiKey",
-    name: "API key",
-    desc: "API key for the OpenAI-compatible API. Save a copy somewhere safe — it may be erased when the plugin updates.",
-    placeholder: "Sk-...",
-  },
-  {
-    kind: "text",
-    key: "apiBaseUrl",
-    name: "API base URL",
-    desc: "Base URL for the OpenAI-compatible API.",
-    placeholder: "https://api.openai.com/v1",
-  },
-  {
-    kind: "text",
-    key: "agentModel",
-    name: "Reasoning model",
-    desc: "Model for cleanup, sort, and chat agents (e.g. a reasoning model like gemma-4-31b-it).",
-    placeholder: "gpt-4o-mini",
-  },
-  {
-    kind: "text",
-    key: "embeddingModel",
-    name: "Embedding model",
-    desc: "Model for text embeddings.",
-    placeholder: "text-embedding-3-small",
-  },
-  {
-    kind: "dropdown",
-    key: "reasoningEnabled",
-    name: "Reasoning",
-    desc: "Let the model think before answering. Off is faster and keeps extraction output clean; On suits heavy reasoning models. Works for local and hosted providers alike.",
-    options: { "true": "On", "false": "Off" },
-  },
-  {
-    kind: "dropdown",
-    key: "reasoningEffort",
-    name: "Thinking effort",
-    desc: "How much thinking to allow when Reasoning is On. Providers or models without thinking levels simply ignore it.",
-    options: Object.fromEntries(
-      REASONING_EFFORTS.map((effort) => [effort, effort.charAt(0).toUpperCase() + effort.slice(1)]),
-    ),
-  },
-  {
-    kind: "button",
-    action: "test",
-    name: "Test connection",
-    desc: "Ping the configured API (the same probe chat's tool-call detection uses) to confirm the API key and base URL are reachable.",
-    buttonText: "Test connection",
-  },
-  {
-    kind: "text",
-    key: "inboxFolder",
-    name: "Inbox folder",
-    desc: "Folder name for inbox triage (leave empty for auto-discover).",
-    placeholder: "Inbox",
-  },
-  {
-    kind: "textarea",
-    key: "ignorePatterns",
-    name: "Ignore patterns",
-    desc: "One glob pattern per line. The plugin skips matching files and folders during indexing and sorting.",
-    placeholder: "archive/\n*.bak",
-    rows: 5,
-  },
-  {
-    kind: "text",
-    key: "manifestFilename",
-    name: "Manifest filename",
-    desc: "Name of the vault manifest file (default: _manifest.md).",
-    placeholder: "_manifest.md",
-  },
-  {
-    kind: "button",
-    action: "clearIndex",
-    name: "Clear vault index",
-    desc: "Deletes the GraphRAG index (index.db, its sql.js sidecars) and the embedding cache so the next build starts from scratch. Derived data — rebuilt on the next build.",
-    buttonText: "Clear index",
-  },
-  {
-    kind: "button",
-    action: "clearComprehension",
-    name: "Clear comprehension data",
-    desc: "Deletes the comprehension ledger, state, skim cache, and summary card so the next build re-understands the vault. Derived data — rebuilt on the next build.",
-    buttonText: "Clear comprehension",
-  },
-];
-
-// Only the keys the Settings tab renders reach data.json: config.yaml owns
-// every other knob, and data.json is the LAST merge layer. embeddingDimensions
-// is the exception — losing it would change the vector width of the index.
-const PERSISTED_SETTING_KEYS: readonly (keyof PluginSettings)[] = [
-  ...SETTING_META.filter((meta): meta is SettingValueMeta => meta.kind !== "button").map(
-    (meta) => meta.key,
-  ),
-  "embeddingDimensions",
-];
-
-// Single write path for both renderers: normalize, store, persist, apply.
-function normalizeSettingValue(key: keyof PluginSettings, value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  switch (key) {
-    case "apiKey":
-    case "apiBaseUrl":
-    case "agentModel":
-    case "embeddingModel":
-    case "inboxFolder":
-      return value.trim();
-    case "manifestFilename":
-      return value.trim() || "_manifest.md";
-    case "reasoningEnabled":
-      // The dropdown stores "true"/"false" strings; the setting is a boolean.
-      return value === "true";
-    case "reasoningEffort":
-      return (REASONING_EFFORTS as string[]).includes(value) ? value : "medium";
-    default:
-      return value;
-  }
-}
 
 class VaultMaintenanceSettingTab extends PluginSettingTab {
   plugin: VaultMaintenancePlugin;
@@ -395,11 +137,33 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
       return;
     }
 
+    if (meta.kind === "number") {
+      this.renderNumberSetting(setting, meta);
+      return;
+    }
+
     setting.addText((text) => {
       text
         .setPlaceholder(meta.placeholder ?? "")
         .setValue(String(currentValue))
         .onChange((newValue) => this.setControlValue(meta.key, newValue));
+    });
+  }
+
+  // One bounded number input, shared by BOTH settings paths.
+  private renderNumberSetting(setting: Setting, meta: SettingValueMeta): void {
+    setting.addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = String(TOKEN_CAP_MIN);
+      text.inputEl.max = String(TOKEN_CAP_MAX);
+      text.inputEl.step = String(TOKEN_CAP_STEP);
+      text
+        .setPlaceholder(meta.placeholder ?? "")
+        .setValue(String(this.plugin.pluginSettings[meta.key]))
+        .onChange((newValue) => {
+          const parsed = parseTokenCap(newValue);
+          if (parsed !== null) this.setControlValue(meta.key, parsed);
+        });
     });
   }
 
@@ -440,6 +204,17 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
           // framework pre-applied.
           setting.setName(meta.name).setDesc(meta.desc);
           this.renderButtonSetting(setting, meta);
+        },
+      };
+    }
+    if (meta.kind === "number") {
+      // SettingDefinitionRender, not a text control: the declarative path
+      // mounts the same bounded number input the imperative path does.
+      return {
+        ...base,
+        render: (setting) => {
+          setting.setName(meta.name).setDesc(meta.desc);
+          this.renderNumberSetting(setting, meta);
         },
       };
     }
@@ -512,72 +287,7 @@ class VaultMaintenanceSettingTab extends PluginSettingTab {
   }
 
   applySettings(): void {
-    const s = this.plugin.pluginSettings;
-    updateSettings({
-      api: {
-        apiKey: s.apiKey,
-        baseUrl: s.apiBaseUrl,
-      },
-      embedding: {
-        model: s.embeddingModel,
-        dimensions: resolveEmbeddingDimensions(s.embeddingModel, s.embeddingDimensions),
-      },
-      agent: {
-        model: s.agentModel,
-      },
-      reasoning: {
-        enabled: s.reasoningEnabled,
-        effort: s.reasoningEffort,
-      },
-      inboxFolder: s.inboxFolder,
-      ignorePatterns: s.ignorePatterns,
-      manifest: {
-        filename: s.manifestFilename,
-      },
-      index: {
-        warnMb: s.indexWarnMb,
-      },
-      query: {
-        topK: s.queryTopK,
-        depth: s.queryDepth,
-        maxFanOut: s.queryMaxFanOut,
-        maxSeeds: s.queryMaxSeeds,
-        topReports: s.queryTopReports,
-      },
-      graph: {
-        clusterThreshold: s.graphClusterThreshold,
-        inferredThreshold: s.graphInferredThreshold,
-        inferredMaxEdgesPerSection: s.graphInferredMaxEdgesPerSection,
-      },
-      reports: {
-        contextCapTokens: s.reportsContextCapTokens,
-        maxOutputTokens: s.reportsMaxOutputTokens,
-      },
-      extraction: {
-        contextCapTokens: s.extractionContextCapTokens,
-        maxOutputTokens: s.extractionMaxOutputTokens,
-      },
-      comprehension: {
-        contextBudgetTokens: s.comprehensionContextBudgetTokens ?? settings.comprehension.contextBudgetTokens,
-        tokenBudget: s.comprehensionTokenBudget ?? settings.comprehension.tokenBudget,
-        rootExcerptWords: s.comprehensionRootExcerptWords ?? settings.comprehension.rootExcerptWords,
-        mocExcerptWords: s.comprehensionMocExcerptWords ?? settings.comprehension.mocExcerptWords,
-        regularExcerptWords: s.comprehensionRegularExcerptWords ?? settings.comprehension.regularExcerptWords,
-        sampleTargetFiles: s.comprehensionSampleTargetFiles ?? settings.comprehension.sampleTargetFiles,
-        verifyTopK: s.comprehensionVerifyTopK ?? settings.comprehension.verifyTopK,
-        verifyQuestionsPerRound: s.comprehensionVerifyQuestionsPerRound ?? settings.comprehension.verifyQuestionsPerRound,
-        toolCallBudget: s.comprehensionToolCallBudget ?? settings.comprehension.toolCallBudget,
-        softThreshold: s.comprehensionSoftThreshold ?? settings.comprehension.softThreshold,
-        confirmThreshold: s.comprehensionConfirmThreshold ?? settings.comprehension.confirmThreshold,
-        lowConfidenceThreshold: s.comprehensionLowConfidenceThreshold ?? settings.comprehension.lowConfidenceThreshold,
-        minCoverage: s.comprehensionMinCoverage ?? settings.comprehension.minCoverage,
-        hotTopics: (s.comprehensionHotTopics || "")
-          .split(",")
-          .map((t) => t.trim())
-          .filter(Boolean),
-        deepenMaxFolders: s.comprehensionDeepenMaxFolders ?? settings.comprehension.deepenMaxFolders,
-      },
-    });
+    updateSettings(pluginSettingsToNested(this.plugin.pluginSettings));
   }
 }
 
@@ -604,49 +314,7 @@ export default class VaultMaintenancePlugin extends Plugin {
       configDir: this.app.vault.configDir,
       pluginDir: this.manifest.dir ?? "",
       dbPath: `${vaultPath}/${INDEX_DB_SUFFIX}`,
-      api: {
-        apiKey: this.pluginSettings.apiKey,
-        baseUrl: this.pluginSettings.apiBaseUrl,
-      },
-      embedding: {
-        model: this.pluginSettings.embeddingModel,
-        dimensions: resolveEmbeddingDimensions(
-          this.pluginSettings.embeddingModel,
-          this.pluginSettings.embeddingDimensions,
-        ),
-      },
-      agent: {
-        model: this.pluginSettings.agentModel,
-      },
-      reasoning: {
-        enabled: this.pluginSettings.reasoningEnabled,
-        effort: this.pluginSettings.reasoningEffort,
-      },
-      inboxFolder: this.pluginSettings.inboxFolder,
-      ignorePatterns: this.pluginSettings.ignorePatterns,
-      manifest: {
-        filename: this.pluginSettings.manifestFilename,
-      },
-      query: {
-        topK: this.pluginSettings.queryTopK,
-        depth: this.pluginSettings.queryDepth,
-        maxFanOut: this.pluginSettings.queryMaxFanOut,
-        maxSeeds: this.pluginSettings.queryMaxSeeds,
-        topReports: this.pluginSettings.queryTopReports,
-      },
-      graph: {
-        clusterThreshold: this.pluginSettings.graphClusterThreshold,
-        inferredThreshold: this.pluginSettings.graphInferredThreshold,
-        inferredMaxEdgesPerSection: this.pluginSettings.graphInferredMaxEdgesPerSection,
-      },
-      reports: {
-        contextCapTokens: this.pluginSettings.reportsContextCapTokens,
-        maxOutputTokens: this.pluginSettings.reportsMaxOutputTokens,
-      },
-      extraction: {
-        contextCapTokens: this.pluginSettings.extractionContextCapTokens,
-        maxOutputTokens: this.pluginSettings.extractionMaxOutputTokens,
-      },
+      ...pluginSettingsToNested(this.pluginSettings),
     });
 
     // Wire the sql.js DB host: vault-file I/O via the adapter (the vault API
